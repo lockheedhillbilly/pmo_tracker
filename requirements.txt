@@ -1,0 +1,14 @@
+# Web dashboard
+flask>=3.0
+
+# Chat access (MCP server)
+mcp>=2.0.0
+
+# Email parsing via Claude
+anthropic>=0.40
+python-dotenv>=1.0
+truststore>=0.9      # only needed if you're behind a corporate TLS-intercepting proxy
+
+# Outlook automation (send_digest.py, process_email_updates.py) — Windows only.
+# Will be replaced by the Microsoft Graph API once this runs off a personal machine.
+pywin32>=310; sys_platform == "win32"

@@ -1,0 +1,13 @@
+# Secrets — never commit
+.env
+
+# Local database (personal data, not code)
+*.db
+*.db-*
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
