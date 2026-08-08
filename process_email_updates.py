@@ -86,7 +86,11 @@ def fetch_candidate_emails(imap: imaplib.IMAP4_SSL, store: TaskStore) -> list[tu
 
     matches = []
     for num in data[0].split() if data and data[0] else []:
-        status, msg_data = imap.fetch(num, "(RFC822)")
+        # BODY.PEEK[], not RFC822 — the latter implicitly marks a message \Seen
+        # as a side effect of fetching it, which would silently break the
+        # "leave unread for retry on failure" behavior below: a message could
+        # end up marked read without ever being recorded as processed.
+        status, msg_data = imap.fetch(num, "(BODY.PEEK[])")
         if status != "OK" or not msg_data or not msg_data[0]:
             continue
         msg = email.message_from_bytes(msg_data[0][1])
