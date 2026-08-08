@@ -12,11 +12,18 @@ content.
 |---|---|
 | `db.py` | SQLite schema + all the read/write logic (tasks, notes, review workflow) |
 | `server.py` | MCP server — lets Claude chat clients add/update/query tasks |
-| `dashboard.py` | Local web dashboard (Flask) — filters, inline editing, Gantt-style views |
+| `dashboard.py` | Flask routes for the local web dashboard |
+| `templates/index.html`, `static/dashboard.{css,js}` | The dashboard's UI — filters, inline editing, saved views, Gantt-style views |
 | `nlu.py` | Turns a messy note into structured task fields via Claude |
 | `process_email_updates.py` | Reads "PMO:"-tagged emails and applies them via `nlu.py` |
 | `send_digest.py` | Emails a formatted summary of open tasks |
 | `run_cycle.py` | Runs the two above in sequence — the single entry point for scheduling |
+| `test_db.py` | Unit tests for `db.py` — run with `pytest` |
+
+Tasks have an `owner` (the one accountable person) and an optional
+`collaborators` field (comma-separated) for others helping on the same
+item — deliberately not a combined string like `"A & B"`, so filtering by
+person still works correctly for everyone involved.
 
 ## Current status vs. where this is headed
 

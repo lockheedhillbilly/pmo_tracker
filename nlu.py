@@ -48,8 +48,12 @@ For each distinct action item in the note:
 - Two people mentioned together are two separate owners with two separate
   add actions UNLESS the note clearly describes one single effort the two
   of them are doing jointly (e.g. "Sparsh and Abhishek to pair on X") — in
-  that case only, use a combined owner string "A & B". Default to separate
-  when in doubt; joint ownership is the exception, not the default.
+  that case only, emit ONE action with the first-named person as "owner"
+  (the accountable one) and the other person(s) as a comma-separated
+  "collaborators" string, e.g. owner="Sparsh", collaborators="Abhishek".
+  Never combine names into a single owner string like "Sparsh & Abhishek" —
+  that breaks per-person filtering. Default to separate owners when in
+  doubt; joint ownership is the exception, not the default.
 - If default field values are supplied (e.g. a current owner/use-case
   context from where the note was entered), use them for any action item
   that doesn't clearly state its own owner/use-case — don't leave a task

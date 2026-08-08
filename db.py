@@ -70,6 +70,7 @@ _MIGRATED_COLUMNS = {
     "review_type": "TEXT",
     "review_due": "TEXT",
     "review_comment": "TEXT",
+    "collaborators": "TEXT",
 }
 
 
@@ -91,6 +92,19 @@ def end_of_work_week(from_date: date | None = None) -> date:
     d = from_date or _today_ist()
     days_until_friday = (4 - d.weekday()) % 7
     return d + timedelta(days=days_until_friday)
+
+
+def _normalize_collaborators(collaborators: str | None) -> str | None:
+    """Comma-separated names, trimmed and deduped. None means "not specified"
+    (leave untouched on update); "" is a valid explicit clear."""
+    if collaborators is None:
+        return None
+    names = [n.strip() for n in collaborators.split(",") if n.strip()]
+    seen: list[str] = []
+    for n in names:
+        if n not in seen:
+            seen.append(n)
+    return ", ".join(seen)
 
 
 @contextmanager
@@ -119,6 +133,7 @@ class Task:
     track: str
     module: str | None
     owner: str
+    collaborators: str | None
     task: str
     added: str
     due: str
@@ -178,6 +193,7 @@ class TaskStore:
         priority: str = "Normal",
         status: str = "Open",
         source: str | None = None,
+        collaborators: str | None = None,
     ) -> dict:
         if track not in TRACKS:
             raise TrackerError(f"track must be one of {TRACKS}, got {track!r}")
@@ -192,16 +208,17 @@ class TaskStore:
 
         due_assumed = due is None
         due_date = due if due else end_of_work_week().isoformat()
+        collaborators = _normalize_collaborators(collaborators)
 
         now = _now_ist()
         with _connect(self.db_path) as conn:
             max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks").fetchone()[0]
             cur = conn.execute(
                 """INSERT INTO tasks
-                   (track, module, owner, task, added, due, due_assumed, priority, status, updated_at, source, sort_order)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (track, module, owner, collaborators, task, added, due, due_assumed, priority, status, updated_at, source, sort_order)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    track, module, owner.strip(), task.strip(),
+                    track, module, owner.strip(), collaborators, task.strip(),
                     now.date().isoformat(), due_date, int(due_assumed),
                     priority, status, now.isoformat(), source, max_order + 10,
                 ),
@@ -229,6 +246,7 @@ class TaskStore:
         track: str | None = None,
         module: str | None = None,
         owner: str | None = None,
+        collaborators: str | None = None,
         task: str | None = None,
         due: str | None = None,
         priority: str | None = None,
@@ -254,7 +272,8 @@ class TaskStore:
         if review_type is not None and review_type not in REVIEW_TYPES:
             raise TrackerError(f"review_type must be one of {REVIEW_TYPES}, got {review_type!r}")
 
-        fields = {"track": track, "module": module, "owner": owner, "task": task,
+        fields = {"track": track, "module": module, "owner": owner,
+                  "collaborators": _normalize_collaborators(collaborators), "task": task,
                   "priority": priority, "status": status, "execution_state": execution_state,
                   "review_status": review_status, "reviewer": reviewer, "review_type": review_type,
                   "review_due": review_due, "review_comment": review_comment}
