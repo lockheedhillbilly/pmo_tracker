@@ -12,3 +12,6 @@ __pycache__/
 
 # Logs
 *.log
+
+# Generated at Vercel build time (build_vercel.py mirrors static/ here)
+/public/

@@ -1,0 +1,13 @@
+# Not needed for the hosted dashboard — these only run locally (Outlook COM
+# automation can't run on Vercel's Linux serverless runtime anyway).
+send_digest.py
+process_email_updates.py
+run_cycle.py
+server.py
+test_db.py
+
+# Local-only data/state
+*.db
+*.db-*
+*.log
+.env

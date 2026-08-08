@@ -19,6 +19,8 @@ content.
 | `send_digest.py` | Emails a formatted summary of open tasks |
 | `run_cycle.py` | Runs the two above in sequence — the single entry point for scheduling |
 | `test_db.py` | Unit tests for `db.py` — run with `pytest` |
+| `pyproject.toml` | Tells Vercel where the Flask app is (`dashboard:app`) and what build step to run |
+| `build_vercel.py` | Vercel build step — mirrors `static/` into `public/static/`, since Vercel serves static assets from `public/**`, not a Flask app's own static folder |
 
 Tasks have an `owner` (the one accountable person) and an optional
 `collaborators` field (comma-separated) for others helping on the same
@@ -45,7 +47,13 @@ that part still needs replacing before this can run on a real host.
 
 Planned next steps to make this actually hosted:
 1. ~~Swap the SQLite file for a hosted database.~~ Done — see above.
-2. Deploy the dashboard to Vercel.
+2. ~~Deploy the dashboard to Vercel.~~ Done — `pyproject.toml` points Vercel's
+   Python runtime at `dashboard:app`, and `build_vercel.py` mirrors `static/`
+   into `public/static/` at build time (Vercel serves static assets from
+   `public/**`, not a Flask app's own static folder). To deploy: import this
+   repo at [vercel.com](https://vercel.com) (sign in with GitHub), and set
+   `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` as
+   Environment Variables in the Vercel project settings — never commit them.
 3. Replace Outlook COM automation with the Microsoft Graph API, pointed at
    a dedicated mailbox — needed regardless of host, since no server can
    automate a desktop Outlook client.
