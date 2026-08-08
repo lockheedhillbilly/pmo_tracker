@@ -9,7 +9,11 @@ from pathlib import Path
 
 import truststore
 
-truststore.inject_into_ssl()  # needed behind a corporate TLS-intercepting proxy; certifi's bundle won't have its cert, but Windows' own cert store does.
+try:
+    # See db.py — same rationale, same defensiveness.
+    truststore.inject_into_ssl()
+except Exception:
+    pass
 
 from dotenv import load_dotenv
 
