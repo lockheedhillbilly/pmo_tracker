@@ -1,13 +1,24 @@
 # Web dashboard
 flask>=3.0
 
+# Windows doesn't ship the IANA timezone database that zoneinfo (used for
+# Asia/Kolkata in db.py) expects — this supplies it. Harmless on other OSes.
+tzdata>=2024.1
+
+# Database (Turso when TURSO_DATABASE_URL is set, otherwise a local file —
+# same libsql engine either way, so no separate sqlite3 driver is needed)
+libsql-client>=0.3.1
+
 # Chat access (MCP server)
 mcp>=2.0.0
 
 # Email parsing via Claude
 anthropic>=0.40
 python-dotenv>=1.0
-truststore>=0.9      # only needed if you're behind a corporate TLS-intercepting proxy
+
+# db.py always applies this (harmless with no proxy); needed for anthropic and
+# for Turso connections whenever you're behind a corporate TLS-intercepting proxy.
+truststore>=0.9
 
 # Outlook automation (send_digest.py, process_email_updates.py) — Windows only.
 # Will be replaced by the Microsoft Graph API once this runs off a personal machine.

@@ -1,16 +1,27 @@
-"""SQLite persistence for the PMO tracker. No NLU here — callers (the MCP tools
-in server.py, driven by Claude's own parsing of chat messages) pass already
-structured fields; this module only validates, computes defaults, and persists.
+"""SQLite-compatible persistence for the PMO tracker, via libsql (Turso when
+TURSO_DATABASE_URL is set, otherwise a local file — same engine either way).
+No NLU here — callers (the MCP tools in server.py, driven by Claude's own
+parsing of chat messages) pass already structured fields; this module only
+validates, computes defaults, and persists.
 """
 
 from __future__ import annotations
 
-import sqlite3
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import truststore
+
+truststore.inject_into_ssl()  # needed behind a corporate TLS-intercepting proxy; certifi's bundle won't have its cert, but Windows' own cert store does. Only matters for TURSO_DATABASE_URL (remote); local file mode doesn't use TLS.
+
+import libsql_client
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 TRACKS = ("Discovery", "Tech", "Data", "Milestone")
 PRIORITIES = ("High", "Normal")
@@ -21,45 +32,45 @@ REVIEW_TYPES = ("Quality check", "Decision", "Client readiness", "Other")
 
 TEAM_TZ = ZoneInfo("Asia/Kolkata")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS tasks (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    track       TEXT NOT NULL CHECK(track IN ('Discovery','Tech','Data','Milestone')),
-    module      TEXT,
-    owner       TEXT NOT NULL,
-    task        TEXT NOT NULL,
-    added       TEXT NOT NULL,
-    due         TEXT NOT NULL,
-    due_assumed INTEGER NOT NULL,
-    priority    TEXT NOT NULL CHECK(priority IN ('High','Normal')) DEFAULT 'Normal',
-    status      TEXT NOT NULL CHECK(status IN ('Open','Done')) DEFAULT 'Open',
-    updated_at  TEXT NOT NULL,
-    source      TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner);
-CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due);
-
-CREATE TABLE IF NOT EXISTS notes (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id    INTEGER NOT NULL,
-    author     TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    pinned     INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY(task_id) REFERENCES tasks(id)
-);
-CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task_id);
-
--- Dedup key is the email's own permanent id (Outlook EntryID), never the
--- subject/thread — a reply to an existing PMO: thread is a distinct message
--- with its own EntryID and must still be processed, even though it shares a
--- subject (and, after "RE:" prefixing, no longer even starts with "PMO:").
-CREATE TABLE IF NOT EXISTS processed_emails (
-    entry_id     TEXT PRIMARY KEY,
-    subject      TEXT,
-    processed_at TEXT NOT NULL
-);
-"""
+# One statement per entry — libsql's execute() takes a single statement at a
+# time (no sqlite3-style executescript).
+SCHEMA_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS tasks (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        track       TEXT NOT NULL CHECK(track IN ('Discovery','Tech','Data','Milestone')),
+        module      TEXT,
+        owner       TEXT NOT NULL,
+        task        TEXT NOT NULL,
+        added       TEXT NOT NULL,
+        due         TEXT NOT NULL,
+        due_assumed INTEGER NOT NULL,
+        priority    TEXT NOT NULL CHECK(priority IN ('High','Normal')) DEFAULT 'Normal',
+        status      TEXT NOT NULL CHECK(status IN ('Open','Done')) DEFAULT 'Open',
+        updated_at  TEXT NOT NULL,
+        source      TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner)",
+    "CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due)",
+    """CREATE TABLE IF NOT EXISTS notes (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id    INTEGER NOT NULL,
+        author     TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        pinned     INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(task_id) REFERENCES tasks(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task_id)",
+    # Dedup key is the email's own permanent id (Outlook EntryID), never the
+    # subject/thread — a reply to an existing PMO: thread is a distinct message
+    # with its own EntryID and must still be processed, even though it shares a
+    # subject (and, after "RE:" prefixing, no longer even starts with "PMO:").
+    """CREATE TABLE IF NOT EXISTS processed_emails (
+        entry_id     TEXT PRIMARY KEY,
+        subject      TEXT,
+        processed_at TEXT NOT NULL
+    )""",
+]
 
 # columns added after the original schema shipped — migrated in _connect()
 _MIGRATED_COLUMNS = {
@@ -107,24 +118,68 @@ def _normalize_collaborators(collaborators: str | None) -> str | None:
     return ", ".join(seen)
 
 
+class _Cursor:
+    """Thin sqlite3.Cursor-alike over a libsql ResultSet, so the rest of this
+    module can keep writing conn.execute(...).fetchone()/.fetchall()/.lastrowid."""
+
+    def __init__(self, rs: libsql_client.ResultSet):
+        self._rs = rs
+
+    def fetchone(self):
+        return self._rs.rows[0] if self._rs.rows else None
+
+    def fetchall(self):
+        return list(self._rs.rows)
+
+    @property
+    def lastrowid(self):
+        return self._rs.last_insert_rowid
+
+
+class _Conn:
+    def __init__(self, client: libsql_client.ClientSync):
+        self._client = client
+
+    def execute(self, sql: str, params=()) -> _Cursor:
+        return _Cursor(self._client.execute(sql, list(params)))
+
+
+# Schema/migration check is run once per target database per process — cheap
+# for a local file, but each check is a network round trip against Turso, so
+# it's not worth repeating on every single method call.
+_schema_ready: set[str] = set()
+
+
 @contextmanager
 def _connect(db_path: Path):
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.row_factory = sqlite3.Row
+    turso_url = os.environ.get("TURSO_DATABASE_URL")
+    if turso_url:
+        target = turso_url
+        # Force the HTTP transport instead of the default WebSocket (Hrana)
+        # one — some corporate proxies reject the WS upgrade handshake outright.
+        connect_url = "https://" + turso_url.split("://", 1)[1] if "://" in turso_url else turso_url
+        raw = libsql_client.create_client_sync(connect_url, auth_token=os.environ.get("TURSO_AUTH_TOKEN"))
+    else:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        target = f"file:{db_path}"
+        raw = libsql_client.create_client_sync(target)
+    conn = _Conn(raw)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(SCHEMA)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
-        for col, sqltype in _MIGRATED_COLUMNS.items():
-            if col not in cols:
-                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {sqltype}")
-        if "sort_order" not in cols:
-            conn.execute("UPDATE tasks SET sort_order = id * 10 WHERE sort_order IS NULL")
+        if target not in _schema_ready:
+            if not turso_url:
+                conn.execute("PRAGMA journal_mode=WAL")
+            for stmt in SCHEMA_STATEMENTS:
+                conn.execute(stmt)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+            for col, sqltype in _MIGRATED_COLUMNS.items():
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {sqltype}")
+            if "sort_order" not in cols:
+                conn.execute("UPDATE tasks SET sort_order = id * 10 WHERE sort_order IS NULL")
+            _schema_ready.add(target)
         yield conn
-        conn.commit()
     finally:
-        conn.close()
+        raw.close()
 
 
 @dataclass
@@ -151,8 +206,8 @@ class Task:
     review_comment: str | None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Task":
-        d = dict(row)
+    def from_row(cls, row: libsql_client.Row) -> "Task":
+        d = row.asdict()
         d["due_assumed"] = bool(d["due_assumed"])
         return cls(**d)
 
@@ -170,8 +225,8 @@ class Note:
     pinned: bool
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Note":
-        d = dict(row)
+    def from_row(cls, row: libsql_client.Row) -> "Note":
+        d = row.asdict()
         d["pinned"] = bool(d["pinned"])
         return cls(**d)
 
@@ -231,6 +286,9 @@ class TaskStore:
             existing = conn.execute("SELECT id FROM tasks WHERE id = ?", (id,)).fetchone()
             if existing is None:
                 raise TrackerError(f"no task with id {id}")
+            # Local SQLite doesn't enforce the notes->tasks foreign key by default,
+            # but Turso does — delete notes first so this works on both.
+            conn.execute("DELETE FROM notes WHERE task_id = ?", (id,))
             conn.execute("DELETE FROM tasks WHERE id = ?", (id,))
 
     def reorder(self, id_order: list[int]) -> None:
@@ -265,7 +323,7 @@ class TaskStore:
             raise TrackerError(f"priority must be one of {PRIORITIES}, got {priority!r}")
         if status is not None and status not in STATUSES:
             raise TrackerError(f"status must be one of {STATUSES}, got {status!r}")
-        if execution_state is not None and execution_state not in EXECUTION_STATES:
+        if execution_state and execution_state not in EXECUTION_STATES:
             raise TrackerError(f"execution_state must be one of {EXECUTION_STATES}, got {execution_state!r}")
         if review_status is not None and review_status not in REVIEW_STATUSES:
             raise TrackerError(f"review_status must be one of {REVIEW_STATUSES}, got {review_status!r}")
@@ -376,16 +434,34 @@ class TaskStore:
         return {r["task_id"]: r["n"] for r in rows}
 
     def note_summaries(self) -> dict[int, dict]:
-        """Per task: count + the text to preview (pinned note wins, else most recent)."""
+        """Per task: count + the note to preview (pinned note wins, else most recent), including
+        that note's own id/author so the dashboard's inline field knows what it's showing and
+        can offer to edit it in place rather than only ever adding a new note."""
         with _connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT task_id, text, pinned, created_at FROM notes ORDER BY pinned DESC, created_at DESC"
+                "SELECT id, task_id, text, author, pinned, created_at FROM notes ORDER BY pinned DESC, created_at DESC"
             ).fetchall()
         summaries: dict[int, dict] = {}
         for r in rows:
-            s = summaries.setdefault(r["task_id"], {"count": 0, "latest": r["text"]})
+            s = summaries.setdefault(
+                r["task_id"],
+                {"count": 0, "latest": r["text"], "latest_id": r["id"], "latest_author": r["author"]},
+            )
             s["count"] += 1
         return summaries
+
+    def edit_note(self, note_id: int, author: str, text: str) -> dict:
+        if not text or not text.strip():
+            raise TrackerError("note text is required")
+        with _connect(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+            if row is None:
+                raise TrackerError(f"no note with id {note_id}")
+            if row["author"] != author:
+                raise TrackerError("can only edit your own note")
+            conn.execute("UPDATE notes SET text = ? WHERE id = ?", (text.strip(), note_id))
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        return Note.from_row(row).to_dict()
 
     def delete_note(self, note_id: int, author: str | None = None) -> None:
         with _connect(self.db_path) as conn:

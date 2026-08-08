@@ -138,6 +138,15 @@ def add_note(task_id):
         return jsonify({"error": str(e)}), 400
 
 
+@app.patch("/api/notes/<int:note_id>")
+def edit_note(note_id):
+    body = request.get_json(force=True)
+    try:
+        return jsonify(store.edit_note(note_id, body["author"], body["text"]))
+    except TrackerError as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.delete("/api/notes/<int:note_id>")
 def remove_note(note_id):
     author = request.args.get("author")

@@ -27,15 +27,24 @@ person still works correctly for everyone involved.
 
 ## Current status vs. where this is headed
 
-This copy still uses the same mechanics as the original prototype:
-SQLite file on local disk, and Outlook desktop automation (via `pywin32`)
-for email. That only works on a Windows machine with Outlook installed and
-you logged in — it will **not** work once this moves to a real host like
-Vercel.
+`db.py` now talks to the database through
+[libsql](https://github.com/tursodatabase/libsql-client-py), which speaks
+the same SQL either way:
+- **No `TURSO_DATABASE_URL` set** (default): reads/writes a local `tasks.db`
+  file, same as before — nothing changes for local dev.
+- **`TURSO_DATABASE_URL` set**: reads/writes a [Turso](https://turso.tech)
+  hosted database instead. Turso's CLI has no native Windows build (its
+  install script explicitly rejects Git Bash/MSYS, and its GitHub releases
+  only ship macOS/Linux binaries) — set it up from the **web dashboard**
+  instead: sign up free, create a database, and copy the Database URL and an
+  Auth Token into `.env` (see `.env.example`). No CLI needed.
+
+Email still goes through Outlook desktop automation (via `pywin32`), which
+only works on a Windows machine with Outlook installed and you logged in —
+that part still needs replacing before this can run on a real host.
 
 Planned next steps to make this actually hosted:
-1. Swap the SQLite file for a hosted database (Turso — closest to a drop-in
-   replacement since it speaks near-identical SQL).
+1. ~~Swap the SQLite file for a hosted database.~~ Done — see above.
 2. Deploy the dashboard to Vercel.
 3. Replace Outlook COM automation with the Microsoft Graph API, pointed at
    a dedicated mailbox — needed regardless of host, since no server can

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import truststore
 
-truststore.inject_into_ssl()  # Windows' cert store has BCG's proxy cert; certifi's bundle doesn't.
+truststore.inject_into_ssl()  # needed behind a corporate TLS-intercepting proxy; certifi's bundle won't have its cert, but Windows' own cert store does.
 
 from dotenv import load_dotenv
 

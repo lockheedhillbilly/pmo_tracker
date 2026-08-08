@@ -1,24 +1,47 @@
 const CURRENT_USER = window.CURRENT_USER;
 const MODULE_COLORS = {
-  "Account Prioritization": "#2E8B57", "Account Intelligence": "#2C6E9B",
-  "Seller Copilot": "#7A4FBE", "Overall UI": "#D98B3B",
+  "Account Prioritization": "#34A76F", "Account Intelligence": "#3E8FD0",
+  "Seller Copilot": "#8A6FE0", "Overall UI": "#E0954A",
 };
-const moduleColor = m => MODULE_COLORS[m] || "#6B7280";
+const moduleColor = m => MODULE_COLORS[m] || "#9C9CA3";
 const WEEK1_MONDAY = new Date("2026-07-13T00:00:00");
-const AVATAR_COLORS = ["#2E8B57","#2C6E9B","#7A4FBE","#D98B3B","#C0392B","#0E7C7B","#8E5B3C"];
+const AVATAR_COLORS = ["#34A76F","#3E8FD0","#8A6FE0","#E0954A","#D6615F","#2FA0A0","#A5744A"];
+
+// ---------- Icon set (hand-built, monochrome stroke icons — no emoji) ----------
+const ICONS = {
+  grid: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+  layers: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="4" rx="1.5"/><rect x="4" y="10" width="16" height="4" rx="1.5"/><rect x="4" y="16" width="16" height="4" rx="1.5"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20.5c0-4 3-6.5 7-6.5s7 2.5 7 6.5"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="M12 3.5l2.5 5.3 5.8.7-4.2 4 1.1 5.8-5.2-2.9-5.2 2.9 1.1-5.8-4.2-4 5.8-.7z"/></svg>',
+  eye: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="9" ry="5.5"/><circle cx="12" cy="12" r="2.4"/></svg>',
+  alert: '<svg viewBox="0 0 24 24"><path d="M12 3.5l9 15.5H3l9-15.5z"/><line x1="12" y1="9.5" x2="12" y2="14"/><circle cx="12" cy="16.7" r="0.5" style="fill:currentColor;stroke:none;"/></svg>',
+  calendar: '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 3v4M16 3v4"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.2 12.3l2.6 2.6 5-5.3"/></svg>',
+  plusCircle: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="16.5"/><line x1="7.5" y1="12" x2="16.5" y2="12"/></svg>',
+  bookmark: '<svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-4-5 4V4z"/></svg>',
+  sliders: '<svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><circle cx="14" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="9" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="16" cy="18" r="2"/></svg>',
+};
+function icon(name, cls) {
+  const svg = ICONS[name];
+  if (!svg) return "";
+  return svg.replace("<svg ", `<svg class="icon${cls ? ' ' + cls : ''}" `);
+}
 const ALL_COLUMNS = {
   module: { label: "Use case", width: "130px" },
-  owner:  { label: "Owner", width: "110px" },
+  owner:  { label: "Owner", width: "104px" },
   task:   { label: "Task", width: "auto" },
-  added:  { label: "Added", width: "70px" },
-  due:    { label: "Due", width: "80px" },
-  priority: { label: "Pri.", width: "34px" },
-  execution_state: { label: "Execution", width: "100px" },
-  review: { label: "Review", width: "72px" },
-  notes:  { label: "Notes", width: "150px" },
+  added:  { label: "Added", width: "64px" },
+  due:    { label: "Due", width: "78px" },
+  priority: { label: "Pri.", width: "30px", center: true },
+  execution_state: { label: "Execution", width: "92px", center: true },
+  review: { label: "Review", width: "58px", center: true },
+  notes:  { label: "Notes", width: "230px" },
   updated_at: { label: "Updated", width: "90px" },
 };
 const DEFAULT_COLUMNS = ["module","owner","task","added","due","priority","execution_state","review","notes"];
+// Columns without a working filter panel (see openFilterPanel) don't get a dropdown affordance —
+// showing one just for it to say "No filter for this column" is dead UI that eats column width.
+const FILTERABLE_COLUMNS = new Set(["module","owner","priority","due"]);
 
 let TASKS = [], NOTE_COUNTS = {};
 let selected = new Set();
@@ -108,9 +131,12 @@ function renderSummary() {
   const dueWeek = TASKS.filter(t => t.status === "Open" && t.due >= mon.toISOString().slice(0,10) && t.due <= sun.toISOString().slice(0,10)).length;
   const done = TASKS.filter(t => t.status === "Done").length;
   const myReviews = TASKS.filter(t => t.reviewer === CURRENT_USER && t.review_status).length;
-  const metrics = [["open","Open",open],["overdue","Overdue",overdue],["dueWeek","Due this week",dueWeek],["completed","Completed",done],["myReviews","My reviews",myReviews]];
-  document.getElementById("summary").innerHTML = metrics.map(([key,label,val]) =>
-    `<div class="metric m-${key} ${quickFilter===key?'active':''}" data-qf="${key}"><b>${val}</b>${label}</div>`
+  const metrics = [
+    ["open","Open",open,"grid"], ["overdue","Overdue",overdue,"alert"], ["dueWeek","Due this week",dueWeek,"calendar"],
+    ["completed","Completed",done,"check"], ["myReviews","My reviews",myReviews,"eye"],
+  ];
+  document.getElementById("summary").innerHTML = metrics.map(([key,label,val,iconName]) =>
+    `<div class="metric m-${key} ${quickFilter===key?'active':''}" data-qf="${key}"><span class="metric-badge">${icon(iconName)}</span><div><b>${val}</b>${label}</div></div>`
   ).join("");
   document.querySelectorAll(".metric").forEach(el => el.onclick = () => setQuickFilter(el.dataset.qf));
 
@@ -217,9 +243,9 @@ function buildHeader() {
   html += `<th style="width:32px;text-align:center;">#</th>`;
   visibleColumns().forEach(key => {
     const def = ALL_COLUMNS[key];
-    html += `<th class="draggable-col" draggable="true" data-colkey="${key}" style="width:${colWidth(key)};">
+    html += `<th class="draggable-col${def.center ? ' col-center' : ''}" draggable="true" data-colkey="${key}" style="width:${colWidth(key)};">
       <span class="htxt" data-sort="${key}">${def.label}</span>
-      ${["task","notes"].includes(key) ? "" : `<span class="filt" data-col="${key}">&#9660;</span>`}
+      ${FILTERABLE_COLUMNS.has(key) ? `<span class="filt" data-col="${key}">&#9660;</span>` : ""}
       <span class="col-resizer" data-resize-col="${key}"></span>
     </th>`;
   });
@@ -273,12 +299,12 @@ function buildHeader() {
 
 // ---------- Cell rendering ----------
 function renderCell(t, key) {
-  if (key === "module") return `<td class="editable-cell" data-field="module"><span class="badge" style="background:${moduleColor(t.module)}22;color:${moduleColor(t.module)};">${esc(t.module||t.track)}</span></td>`;
+  if (key === "module") return `<td class="editable-cell" data-field="module"><span class="mod-dot" style="background:${moduleColor(t.module)};"></span><span class="mod-text">${esc(t.module||t.track)}</span></td>`;
   if (key === "owner") {
     const collabHtml = collaboratorList(t).map(c =>
       `<span class="avatar collab-avatar" style="background:${avatarColor(c)};" title="${esc(c)} (collaborator)">${esc(initials(c))}</span>`
     ).join("");
-    return `<td class="editable-cell owner-cell" data-field="owner"><span class="avatar" style="background:${avatarColor(t.owner)};">${esc(initials(t.owner))}</span>${esc(t.owner)}${collabHtml}</td>`;
+    return `<td class="editable-cell owner-cell" data-field="owner"><span class="owner-inner"><span class="avatar" style="background:${avatarColor(t.owner)};">${esc(initials(t.owner))}</span>${esc(t.owner)}${collabHtml}</span></td>`;
   }
   if (key === "task") {
     const newBadge = isNew(t) ? `<span class="badge new-badge">New</span> ` : "";
@@ -290,19 +316,31 @@ function renderCell(t, key) {
     const label = isOverdue(t) ? `${fmtDateShort(t.due)} (overdue)` : fmtDateShort(t.due);
     return `<td class="editable-cell" data-field="due"><span class="due-text ${cls}">${label}</span></td>`;
   }
-  if (key === "priority") return `<td><span class="priority-flag ${t.priority==='High'?'high':''}" data-priority-for="${t.id}" title="${t.priority==='High'?'High priority — click to clear':'Click to mark High priority'}">${t.priority==='High'?'⚑':'⚐'}</span></td>`;
+  if (key === "priority") return `<td class="cell-center"><span class="priority-flag ${t.priority==='High'?'high':''}" data-priority-for="${t.id}" title="${t.priority==='High'?'High priority — click to clear':'Click to mark High priority'}">${t.priority==='High'?'⚑':'⚐'}</span></td>`;
   if (key === "execution_state") {
-    if (!t.execution_state) return `<td class="editable-cell" data-field="execution_state"></td>`;
-    const stateColors = {"Not started":"#6B7280","In progress":"#2C6E9B","Blocked":"#C0392B"};
-    const c = stateColors[t.execution_state] || "#6B7280";
-    return `<td class="editable-cell" data-field="execution_state"><span class="badge" style="background:${c}22;color:${c};">${esc(t.execution_state)}</span></td>`;
+    // A persistent, always-visible <select> rather than the click-to-reveal editable-cell
+    // pattern: the dropdown itself IS the affordance, no hover/click needed to discover it.
+    const stateColors = {"Not started":"#8A8A92","In progress":"#3E8FD0","Blocked":"#D6615F"};
+    const val = t.execution_state || "";
+    const c = stateColors[val] || "#9C9CA3";
+    const opts = ["", "Not started", "In progress", "Blocked"].map(o =>
+      `<option value="${o}" ${o===val?"selected":""}>${o || "—"}</option>`
+    ).join("");
+    return `<td class="cell-center"><select class="exec-select" data-exec-for="${t.id}" style="background-color:${c}22;color:${c};">${opts}</select></td>`;
   }
-  if (key === "review") return `<td>${renderReviewCell(t)}</td>`;
+  if (key === "review") return `<td class="cell-center">${renderReviewCell(t)}</td>`;
   if (key === "notes") {
     const info = NOTE_COUNTS[t.id];
     const preview = info ? info.latest : "";
     const more = info && info.count > 1 ? `<span class="notes-more" data-notes-more="${t.id}">+${info.count-1} more</span>` : "";
-    return `<td><textarea class="notes-inline" data-notes-for="${t.id}" rows="1" placeholder="Add a note...">${esc(preview)}</textarea>${more}</td>`;
+    // The note shown is always a specific, known note (info.latest_id) — never ambiguous —
+    // so editing it in place is always well-defined as long as you authored it. Adding a
+    // second note is a deliberate, separate action via the + button, not an implicit fallback.
+    const editableNoteId = (info && info.latest_author === CURRENT_USER) ? info.latest_id : "";
+    return `<td><div class="notes-cell-wrap">
+      <textarea class="notes-inline" data-notes-for="${t.id}" data-editing-note-id="${editableNoteId}" rows="1" placeholder="Add a note...">${esc(preview)}</textarea>
+      <span class="notes-add" data-notes-add-for="${t.id}" title="Add another note">+</span>
+    </div>${more}</td>`;
   }
   if (key === "updated_at") return `<td><span class="added-text" title="${esc(fmtDateTimeFull(t.updated_at))}">${fmtDateShort(t.updated_at.slice(0,10))}</span></td>`;
   return "<td></td>";
@@ -344,12 +382,15 @@ function renderGroupedBoard(list) {
     if (done) meta += ` &middot; ${done} done`;
     if (reviewPending) meta += ` &middot; ${reviewPending} review pending`;
     if (overdueN) meta += ` &middot; ${overdueN} overdue`;
+    const accent = viewBy === "module" ? moduleColor(g1key === "(no use case)" ? "" : g1key) : "#C7C7CC";
+    const pct = g1tasks.length ? Math.round((done / g1tasks.length) * 100) : 0;
     html += `<tr class="group-header" data-group="${esc(g1key)}"><td colspan="${visibleColumns().length+3}">
       <span class="ghactions">
         <span class="ghlink" data-sortgroup="${esc(g1key)}">Sort</span>
         <span class="ghadd" data-addto="${esc(g1key)}">+ Add task</span>
       </span>
-      ${collapsed?'&#9656;':'&#9662;'} ${esc(g1key)} <span class="ghmeta">${meta}</span>
+      ${collapsed?'&#9656;':'&#9662;'} <span class="gh-dot" style="background:${accent};"></span>${esc(g1key)} <span class="ghmeta">${meta}</span>
+      <div class="ghprogress"><div class="ghprogress-fill" style="width:${pct}%;background:${accent};"></div></div>
     </td></tr>`;
     if (activeGroupAddRows.has(g1key)) html += addRowHtml({groupKey: g1key});
     if (collapsed) return;
@@ -630,9 +671,21 @@ function attachCellIconHandlers() {
       }
     });
   });
+  document.querySelectorAll("[data-exec-for]").forEach(el => {
+    el.addEventListener("click", (e) => e.stopPropagation());
+    el.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const id = parseInt(el.dataset.execFor);
+      await patchTask(id, { execution_state: el.value });
+      renderBoard();
+    });
+  });
   document.querySelectorAll(".notes-inline").forEach(el => attachNotesInline(el));
   document.querySelectorAll("[data-notes-more]").forEach(el => {
     el.addEventListener("click", (e) => { e.stopPropagation(); openTaskNotesPanel(parseInt(el.dataset.notesMore)); });
+  });
+  document.querySelectorAll("[data-notes-add-for]").forEach(el => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); openTaskNotesPanel(parseInt(el.dataset.notesAddFor), {focusAdd: true}); });
   });
 }
 
@@ -640,10 +693,19 @@ function autoGrow(el) { el.style.height = "auto"; el.style.height = Math.min(el.
 
 function attachNotesInline(el) {
   const id = parseInt(el.dataset.notesFor);
+  // If this field is showing exactly one note that's yours, editing it in place should PATCH
+  // that note, not silently create a second one — that's the "edit" affordance for the common
+  // case; anything more ambiguous (multiple notes, or someone else's) goes through the panel.
+  const editingNoteId = el.dataset.editingNoteId;
+  const isEditing = !!editingNoteId;
+  const submit = (text) => isEditing
+    ? fetch(`/api/notes/${editingNoteId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text})})
+    : fetch(`/api/tasks/${id}/notes`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text})});
+
   el.addEventListener("click", (e) => e.stopPropagation());
   el.addEventListener("focus", () => {
     el.dataset.preview = el.value;
-    el.value = "";
+    if (!isEditing) el.value = "";
     el.rows = 3;
     autoGrow(el);
   });
@@ -651,15 +713,15 @@ function attachNotesInline(el) {
   el.addEventListener("keydown", async (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (el.value.trim()) {
+      if (el.value.trim() && el.value.trim() !== (isEditing ? el.dataset.preview : null)) {
         const text = el.value.trim();
-        await fetch(`/api/tasks/${id}/notes`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text})});
+        await submit(text);
         NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
         // show what was just written instead of clearing to blank — blur() below
         // won't re-submit since value now matches the (updated) preview it compares against.
         el.dataset.preview = text;
         el.value = text;
-        showToast("Note added");
+        showToast(isEditing ? "Note updated" : "Note added");
         el.blur();
       }
     }
@@ -667,7 +729,7 @@ function attachNotesInline(el) {
   });
   el.addEventListener("blur", async () => {
     if (el.value.trim() && el.value.trim() !== (el.dataset.preview || "")) {
-      await fetch(`/api/tasks/${id}/notes`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text: el.value.trim()})});
+      await submit(el.value.trim());
       NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
     }
     el.rows = 1;
@@ -719,9 +781,6 @@ function startEdit(td, id) {
   else if (field === "priority") {
     input = document.createElement("select");
     ["Normal","High"].forEach(p => { const o=document.createElement("option"); o.value=p; o.textContent=p; if (p===t.priority) o.selected=true; input.appendChild(o); });
-  } else if (field === "execution_state") {
-    input = document.createElement("select");
-    ["","Not started","In progress","Blocked"].forEach(p => { const o=document.createElement("option"); o.value=p; o.textContent=p||"(none)"; if (p===(t.execution_state||"")) o.selected=true; input.appendChild(o); });
   } else if (field === "module") { input = document.createElement("input"); input.value = t.module || ""; }
   else if (field === "task") { input = document.createElement("input"); input.value = t.task; }
   else { input = document.createElement("input"); input.value = t[field] || ""; }
@@ -784,12 +843,17 @@ function openRowMenu(anchor, id) {
       renderBoard(); renderSummary(); showToast("Assigned to Akshit for review");
     } else { openReviewPopover(anchor, id); }
   };
-  pop.querySelector('[data-act="move"]').onclick = () => {
+  pop.querySelector('[data-act="move"]').onclick = (e) => {
+    // Replacing pop.innerHTML detaches e.target from the DOM; without stopping propagation here,
+    // the document-level click-away listener sees a target with no ".popover" ancestor and closes
+    // the popover instantly, before the replacement form is even visible.
+    e.stopPropagation();
     pop.innerHTML = `<label>Move to use case</label><input class="move-module" list="module-list" value="${esc(t.module||'')}"><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Move</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
     pop.querySelector('[data-act="go"]').onclick = async () => { await patchTask(id, {module: pop.querySelector(".move-module").value}); closePopovers(); renderBoard(); showToast("Moved"); };
   };
-  pop.querySelector('[data-act="collab"]').onclick = () => {
+  pop.querySelector('[data-act="collab"]').onclick = (e) => {
+    e.stopPropagation();
     pop.innerHTML = `<label>Collaborators (comma-separated, in addition to owner ${esc(t.owner)})</label><input class="collab-input" list="owner-list" value="${esc(t.collaborators||'')}" placeholder="e.g. Abhishek, Hriday"><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Save</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
     pop.querySelector('[data-act="go"]').onclick = async () => { await patchTask(id, {collaborators: pop.querySelector(".collab-input").value}); closePopovers(); renderBoard(); showToast("Collaborators updated"); };
@@ -799,7 +863,8 @@ function openRowMenu(anchor, id) {
     navigator.clipboard?.writeText(link);
     closePopovers(); showToast("Link copied (local dashboard only)");
   };
-  pop.querySelector('[data-act="delete"]').onclick = () => {
+  pop.querySelector('[data-act="delete"]').onclick = (e) => {
+    e.stopPropagation();
     pop.innerHTML = `<div style="font-size:12px;margin-bottom:8px;">Delete &ldquo;${esc(t.task.slice(0,60))}${t.task.length>60?'…':''}&rdquo;?</div>
       <div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" style="background:var(--red);" data-act="go">Delete</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
@@ -837,12 +902,13 @@ function openReviewPopover(anchor, id) {
 // ---------- Notes: persistent right-docked panel (stays open while you browse the table) ----------
 let notesPanelTaskId = null;
 
-async function openTaskNotesPanel(id) {
+async function openTaskNotesPanel(id, opts) {
   notesPanelTaskId = id;
   const panel = document.getElementById("notes-panel");
   panel.style.display = "flex";
   document.querySelector("main").style.marginRight = "320px";
   await refreshNotesPanel();
+  if (opts && opts.focusAdd) panel.querySelector(".note-input")?.focus();
 }
 function closeNotesPanel() {
   notesPanelTaskId = null;
@@ -867,14 +933,31 @@ async function refreshNotesPanel() {
     <div class="note-list">${notes.length ? notes.map(n => `
       <div class="note-item" data-note-id="${n.id}">
         <div class="meta"><span>${esc(n.author)} ${n.pinned?'&#128204;':''}</span><span>${fmtDateShort(n.created_at.slice(0,10))}</span></div>
-        <div>${esc(n.text)}</div>
+        <div class="note-text">${esc(n.text)}</div>
         <div class="actions">
+          ${n.author===CURRENT_USER?'<span data-act="edit">Edit</span>':''}
           <span data-act="pin">${n.pinned?'Unpin':'Pin'}</span>
           ${n.author===CURRENT_USER?'<span data-act="del">Delete</span>':''}
         </div>
       </div>`).join("") : `<div class="added-text">No notes yet — add the first one below.</div>`}</div>
     <input class="note-input" placeholder="Add a note... (Enter to add)">`;
   panel.querySelector("#np-close").onclick = closeNotesPanel;
+  panel.querySelectorAll('[data-act="edit"]').forEach(el => el.onclick = () => {
+    const item = el.closest(".note-item");
+    const noteId = item.dataset.noteId;
+    const currentText = notes.find(n => n.id === parseInt(noteId)).text;
+    const textDiv = item.querySelector(".note-text");
+    textDiv.outerHTML = `<textarea class="note-edit-input" rows="2">${esc(currentText)}</textarea>
+      <div class="actions"><span data-act="save-edit">Save</span><span data-act="cancel-edit">Cancel</span></div>`;
+    const ta = item.querySelector(".note-edit-input");
+    ta.focus(); ta.select();
+    item.querySelector('[data-act="cancel-edit"]').onclick = refreshNotesPanel;
+    item.querySelector('[data-act="save-edit"]').onclick = async () => {
+      if (!ta.value.trim()) return;
+      await fetch(`/api/notes/${noteId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text: ta.value.trim()})});
+      await refreshNotesPanel(); loadTasks();
+    };
+  });
   panel.querySelectorAll('[data-act="pin"]').forEach(el => el.onclick = async () => { await fetch(`/api/notes/${el.closest('.note-item').dataset.noteId}/pin`, {method:"POST"}); await refreshNotesPanel(); });
   panel.querySelectorAll('[data-act="del"]').forEach(el => el.onclick = async () => { await fetch(`/api/notes/${el.closest('.note-item').dataset.noteId}?author=${encodeURIComponent(CURRENT_USER)}`, {method:"DELETE"}); await refreshNotesPanel(); loadTasks(); });
   const input = panel.querySelector(".note-input");
@@ -999,8 +1082,7 @@ function markFilterIcon() {
 }
 
 // ---------- Column manager ----------
-document.getElementById("columns-btn").addEventListener("click", (e) => {
-  e.stopPropagation();
+function openColumnsManager(anchorEl) {
   closePopovers();
   const pop = document.createElement("div");
   pop.className = "popover";
@@ -1009,7 +1091,7 @@ document.getElementById("columns-btn").addEventListener("click", (e) => {
   `).join("") + `<div class="added-text" style="margin-top:6px;">Drag column headers to reorder or resize.</div>
   <div class="pop-item" data-act="reset-cols" style="margin-top:4px;color:var(--accent);">Reset to default</div>`;
   document.body.appendChild(pop);
-  const r = e.target.getBoundingClientRect();
+  const r = anchorEl.getBoundingClientRect();
   pop.style.top = (r.bottom + window.scrollY) + "px"; pop.style.left = (r.left + window.scrollX) + "px";
   pop.querySelectorAll("[data-col-toggle]").forEach(cb => {
     cb.onchange = () => {
@@ -1027,26 +1109,84 @@ document.getElementById("columns-btn").addEventListener("click", (e) => {
     closePopovers(); buildHeader(); renderBoard();
     showToast("Columns reset to default");
   };
+}
+
+// ---------- View settings popover (Columns / Density / Hide completed / Save view — consolidated
+// out of the toolbar so the primary actions there (search, group-by, filters, add task) aren't
+// crowded out by low-frequency ones) ----------
+document.getElementById("settings-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  closePopovers();
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.innerHTML = `
+    <div class="pop-item" data-act="columns">Columns…</div>
+    <div class="pop-item" data-act="density">Density: ${density === "compact" ? "Compact" : "Comfortable"}</div>
+    <div class="pop-item" data-act="hide-completed">${hideCompleted ? "&#9745;" : "&#9744;"} Hide completed</div>
+    <hr>
+    <div class="pop-item" data-act="save-view">Save current view…</div>
+  `;
+  document.body.appendChild(pop);
+  const r = e.currentTarget.getBoundingClientRect();
+  pop.style.top = (r.bottom + window.scrollY) + "px"; pop.style.left = (r.left - 150 + window.scrollX) + "px";
+
+  pop.querySelector('[data-act="columns"]').onclick = () => openColumnsManager(e.currentTarget);
+  pop.querySelector('[data-act="density"]').onclick = () => {
+    density = density === "comfortable" ? "compact" : "comfortable";
+    localStorage.setItem("pmo_density", density);
+    closePopovers(); renderBoard();
+  };
+  pop.querySelector('[data-act="hide-completed"]').onclick = () => {
+    hideCompleted = !hideCompleted;
+    closePopovers(); renderBoard();
+  };
+  pop.querySelector('[data-act="save-view"]').onclick = () => {
+    closePopovers();
+    const name = window.prompt("Name this view:");
+    if (!name) return;
+    const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}");
+    saved[name] = { viewBy, thenBy, filters, quickFilter, sortCol, sortDir, hideCompleted, density, columns };
+    localStorage.setItem("pmo_saved_views", JSON.stringify(saved));
+    currentViewKey = "c:" + name;
+    renderSidebarNav();
+    showToast(`Saved view "${name}"`);
+  };
 });
 
-// ---------- Saved views ----------
+// ---------- Saved views (left sidebar nav) ----------
 const BUILTIN_VIEWS = {
-  "All tasks": { viewBy:"flat", thenBy:"none", filters:{owner:null,module:null,priority:null,due:"all",status:"all",moduleBlank:false}, quickFilter:null },
-  "By use case": { viewBy:"module", thenBy:"none" },
-  "By owner": { viewBy:"owner", thenBy:"none" },
-  "My tasks": { viewBy:"flat", thenBy:"none", quickFilter:"myTasks" },
-  "My reviews": { viewBy:"review", thenBy:"none", quickFilter:"myReviews" },
-  "Overdue": { viewBy:"flat", thenBy:"none", quickFilter:"overdue" },
-  "Due this week": { viewBy:"flat", thenBy:"none", quickFilter:"dueWeek" },
-  "Recently added": { viewBy:"flat", thenBy:"none", sortCol:"added", sortDir:-1 },
-  "Completed": { viewBy:"flat", thenBy:"none", quickFilter:"completed", hideCompleted:false },
+  "All tasks": { icon:"grid", viewBy:"flat", thenBy:"none", filters:{owner:null,module:null,priority:null,due:"all",status:"all",moduleBlank:false}, quickFilter:null },
+  "By use case": { icon:"layers", viewBy:"module", thenBy:"none" },
+  "By owner": { icon:"user", viewBy:"owner", thenBy:"none" },
+  "My tasks": { icon:"star", viewBy:"flat", thenBy:"none", quickFilter:"myTasks" },
+  "My reviews": { icon:"eye", viewBy:"review", thenBy:"none", quickFilter:"myReviews" },
+  "Overdue": { icon:"alert", viewBy:"flat", thenBy:"none", quickFilter:"overdue" },
+  "Due this week": { icon:"calendar", viewBy:"flat", thenBy:"none", quickFilter:"dueWeek" },
+  "Recently added": { icon:"plusCircle", viewBy:"flat", thenBy:"none", sortCol:"added", sortDir:-1 },
+  "Completed": { icon:"check", viewBy:"flat", thenBy:"none", quickFilter:"completed", hideCompleted:false },
 };
-function populateViewsSelect() {
-  const sel = document.getElementById("views-select");
+let currentViewKey = "b:By use case";
+function renderSidebarNav() {
   const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}");
-  sel.innerHTML = `<option value="">Saved views...</option>` +
-    `<optgroup label="Built-in">` + Object.keys(BUILTIN_VIEWS).map(n=>`<option value="b:${esc(n)}">${esc(n)}</option>`).join("") + `</optgroup>` +
-    (Object.keys(saved).length ? `<optgroup label="Custom">` + Object.keys(saved).map(n=>`<option value="c:${esc(n)}">${esc(n)}</option>`).join("") + `</optgroup>` : "");
+  const nav = document.getElementById("sidebar-nav");
+  const item = (key, iconName, name) =>
+    `<div class="nav-item ${currentViewKey===key?'active':''}" data-viewkey="${esc(key)}">${icon(iconName)}${esc(name)}</div>`;
+  let html = Object.keys(BUILTIN_VIEWS).map(n => item("b:"+n, BUILTIN_VIEWS[n].icon, n)).join("");
+  if (Object.keys(saved).length) {
+    html += `<div class="sidebar-label" style="margin-top:12px;">Custom</div>` +
+      Object.keys(saved).map(n => item("c:"+n, "bookmark", n)).join("");
+  }
+  nav.innerHTML = html;
+  nav.querySelectorAll(".nav-item").forEach(el => {
+    el.onclick = () => {
+      const val = el.dataset.viewkey;
+      const [kind, name] = [val[0], val.slice(2)];
+      currentViewKey = val;
+      if (kind === "b") applyViewConfig(BUILTIN_VIEWS[name]);
+      else applyViewConfig(saved[name]);
+      renderSidebarNav();
+    };
+  });
 }
 function applyViewConfig(cfg) {
   viewBy = cfg.viewBy ?? "flat"; thenBy = cfg.thenBy ?? "none";
@@ -1058,39 +1198,25 @@ function applyViewConfig(cfg) {
   columns = cfg.columns ?? loadColumnsForView(viewBy);
   document.getElementById("view-by").value = viewBy;
   document.getElementById("then-by").value = thenBy;
-  document.getElementById("density-btn").textContent = `Density: ${density === "compact" ? "Compact" : "Comfortable"}`;
   renderAll();
 }
-document.getElementById("views-select").addEventListener("change", (e) => {
-  const val = e.target.value; if (!val) return;
-  const [kind, name] = [val[0], val.slice(2)];
-  if (kind === "b") applyViewConfig(BUILTIN_VIEWS[name]);
-  else { const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}"); applyViewConfig(saved[name]); }
-});
-document.getElementById("save-view-btn").addEventListener("click", () => {
-  const name = window.prompt("Name this view:");
-  if (!name) return;
-  const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}");
-  saved[name] = { viewBy, thenBy, filters, quickFilter, sortCol, sortDir, hideCompleted, density, columns };
-  localStorage.setItem("pmo_saved_views", JSON.stringify(saved));
-  populateViewsSelect();
-  showToast(`Saved view "${name}"`);
-});
 
 // ---------- Toolbar wiring ----------
 document.getElementById("f-search").addEventListener("input", (e) => { searchQ = e.target.value.toLowerCase(); renderBoard(); });
 document.getElementById("view-by").addEventListener("change", (e) => { viewBy = e.target.value; columns = loadColumnsForView(viewBy); renderAll(); });
 document.getElementById("then-by").addEventListener("change", (e) => { thenBy = e.target.value; renderBoard(); });
-document.getElementById("hide-completed-btn").addEventListener("click", (e) => { hideCompleted = !hideCompleted; e.target.classList.toggle("toggle-on", hideCompleted); renderBoard(); });
-document.getElementById("density-btn").addEventListener("click", (e) => {
-  density = density === "comfortable" ? "compact" : "comfortable";
-  localStorage.setItem("pmo_density", density);
-  e.target.textContent = `Density: ${density === "compact" ? "Compact" : "Comfortable"}`;
-  renderBoard();
-});
 document.getElementById("filters-btn").addEventListener("click", () => {
   filters = { owner: null, module: null, priority: null, due: "all", status: "all", moduleBlank: false };
   markFilterIcon(); renderBoard();
+});
+document.getElementById("expand-all-btn").addEventListener("click", () => {
+  collapsedGroups.clear();
+  renderBoard();
+});
+document.getElementById("collapse-all-btn").addEventListener("click", () => {
+  const grouped = applyFilters(TASKS);
+  grouped.forEach(t => collapsedGroups.add(groupKey(t, viewBy)));
+  renderBoard();
 });
 document.getElementById("add-btn").addEventListener("click", () => {
   const inp = document.querySelector('.addrow[data-addrow-for="__top__"] .task-input');
@@ -1149,6 +1275,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-document.getElementById("density-btn").textContent = `Density: ${density === "compact" ? "Compact" : "Comfortable"}`;
-populateViewsSelect();
+document.getElementById("settings-btn").innerHTML = icon("sliders");
+renderSidebarNav();
 loadMeta().then(loadTasks);

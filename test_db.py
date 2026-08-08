@@ -12,6 +12,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from db import TrackerError, TaskStore, end_of_work_week
 
 
+@pytest.fixture(autouse=True)
+def no_turso(monkeypatch):
+    """Tests must stay isolated to a throwaway local file, never the real
+    shared database — regardless of what TURSO_DATABASE_URL is set to in .env."""
+    monkeypatch.delenv("TURSO_DATABASE_URL", raising=False)
+    monkeypatch.delenv("TURSO_AUTH_TOKEN", raising=False)
+
+
 @pytest.fixture
 def store(tmp_path):
     return TaskStore(tmp_path / "tasks.db")
@@ -79,6 +87,20 @@ def test_update_task_can_clear_collaborators(store):
     assert updated["collaborators"] == ""
 
 
+def test_update_task_can_clear_execution_state(store):
+    t = store.add_task(track="Discovery", owner="Sparsh", task="X")
+    updated = store.update_task(id=t["id"], execution_state="Blocked")
+    assert updated["execution_state"] == "Blocked"
+    cleared = store.update_task(id=t["id"], execution_state="")
+    assert cleared["execution_state"] == ""
+
+
+def test_update_task_rejects_bad_execution_state(store):
+    t = store.add_task(track="Discovery", owner="Sparsh", task="X")
+    with pytest.raises(TrackerError):
+        store.update_task(id=t["id"], execution_state="Done-ish")
+
+
 def test_update_task_unknown_id_raises(store):
     with pytest.raises(TrackerError):
         store.update_task(id=9999, status="Done")
@@ -96,6 +118,15 @@ def test_delete_task(store):
     assert store.list_tasks() == []
     with pytest.raises(TrackerError):
         store.delete_task(t["id"])
+
+
+def test_delete_task_also_deletes_its_notes(store):
+    """Local SQLite doesn't enforce the notes->tasks foreign key by default, but
+    Turso does — deleting a task with notes must not leave them (or fail)."""
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    store.add_note(t["id"], author="Akshit", text="Some note")
+    store.delete_task(t["id"])
+    assert store.list_notes(t["id"]) == []
 
 
 def test_list_tasks_filters_by_owner_and_status(store):
@@ -136,3 +167,30 @@ def test_add_note_requires_text_and_valid_task(store):
         store.add_note(t["id"], author="Akshit", text="  ")
     with pytest.raises(TrackerError):
         store.add_note(9999, author="Akshit", text="hi")
+
+
+def test_edit_note_updates_text(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    note = store.add_note(t["id"], author="Akshit", text="Original")
+    updated = store.edit_note(note["id"], author="Akshit", text="Revised")
+    assert updated["text"] == "Revised"
+    assert store.list_notes(t["id"])[0]["text"] == "Revised"
+
+
+def test_edit_note_rejects_other_authors_and_blank_text(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    note = store.add_note(t["id"], author="Akshit", text="Original")
+    with pytest.raises(TrackerError):
+        store.edit_note(note["id"], author="SomeoneElse", text="Hijacked")
+    with pytest.raises(TrackerError):
+        store.edit_note(note["id"], author="Akshit", text="   ")
+    with pytest.raises(TrackerError):
+        store.edit_note(9999, author="Akshit", text="hi")
+
+
+def test_note_summaries_include_latest_id_and_author(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    note = store.add_note(t["id"], author="Akshit", text="Only note")
+    summaries = store.note_summaries()
+    assert summaries[t["id"]]["latest_id"] == note["id"]
+    assert summaries[t["id"]]["latest_author"] == "Akshit"
