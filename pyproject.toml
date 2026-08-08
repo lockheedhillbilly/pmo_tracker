@@ -8,8 +8,9 @@ dependencies = [
     "libsql-client>=0.3.1",
     "anthropic>=0.40",
     "python-dotenv>=1.0",
-    "truststore>=0.9",
 ]
+# truststore is Windows-only (see requirements.txt) — Vercel runs on Linux,
+# so it's deliberately left out of this dependency list entirely.
 
 [tool.vercel]
 entrypoint = "dashboard:app"

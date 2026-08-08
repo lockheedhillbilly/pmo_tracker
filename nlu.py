@@ -7,16 +7,11 @@ import json
 import os
 from pathlib import Path
 
-import truststore
-
-try:
-    # See db.py — same rationale, same defensiveness.
-    truststore.inject_into_ssl()
-except Exception:
-    pass
-
 from dotenv import load_dotenv
 
+# Importing db runs its (Windows-only) truststore setup — see db.py. Doing it
+# there once, rather than duplicating the same logic here, since this module
+# always imports db anyway.
 from db import PRIORITIES, TRACKS, TaskStore
 
 PROJECT_ROOT = Path(__file__).resolve().parent

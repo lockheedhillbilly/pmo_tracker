@@ -8,22 +8,25 @@ validates, computes defaults, and persists.
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import truststore
-
-try:
-    # Needed behind a corporate TLS-intercepting proxy; certifi's bundle won't
-    # have its cert, but the OS's own cert store does. Only matters for
-    # TURSO_DATABASE_URL (remote); irrelevant on hosts with no such proxy
-    # (e.g. Vercel) — never let this take down the whole app if it fails there.
-    truststore.inject_into_ssl()
-except Exception:
-    pass
+if sys.platform == "win32":
+    # Needed behind a corporate TLS-intercepting proxy on Windows dev
+    # machines; certifi's bundle won't have its cert, but the OS's own cert
+    # store does. Windows-only and best-effort: hosted runners (Vercel,
+    # GitHub Actions) have no such proxy, and this was observed to interfere
+    # with other HTTPS clients (e.g. the Anthropic SDK) on a clean Linux
+    # runner despite not raising, so it must not run there at all.
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
 
 import libsql_client
 from dotenv import load_dotenv

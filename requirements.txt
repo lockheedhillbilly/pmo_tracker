@@ -16,9 +16,10 @@ mcp>=2.0.0
 anthropic>=0.40
 python-dotenv>=1.0
 
-# db.py always applies this (harmless with no proxy); needed for anthropic and
-# for Turso connections whenever you're behind a corporate TLS-intercepting proxy.
-truststore>=0.9
+# Windows-only: works around a corporate TLS-intercepting proxy on local dev
+# machines. Actively breaks other HTTPS clients on at least one clean Linux
+# runner despite not raising, so db.py never even imports this off Windows.
+truststore>=0.9; sys_platform == "win32"
 
 # Email (send_digest.py, process_email_updates.py) uses Gmail via IMAP/SMTP
 # with an App Password — both are Python stdlib (imaplib, smtplib), no
