@@ -15,3 +15,6 @@ __pycache__/
 
 # Generated at Vercel build time (build_vercel.py mirrors static/ here)
 /public/
+
+.vercel
+.env*

@@ -20,9 +20,9 @@ python-dotenv>=1.0
 # for Turso connections whenever you're behind a corporate TLS-intercepting proxy.
 truststore>=0.9
 
-# Outlook automation (send_digest.py, process_email_updates.py) — Windows only.
-# Will be replaced by the Microsoft Graph API once this runs off a personal machine.
-pywin32>=310; sys_platform == "win32"
+# Email (send_digest.py, process_email_updates.py) uses Gmail via IMAP/SMTP
+# with an App Password — both are Python stdlib (imaplib, smtplib), no
+# package needed here.
 
 # Tests (test_db.py)
 pytest>=7.4

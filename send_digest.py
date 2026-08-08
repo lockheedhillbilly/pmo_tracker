@@ -1,15 +1,21 @@
-"""Formats the current tracker state and emails it via the local Outlook
-desktop app (COM automation — sends as the already-signed-in account, no
-credentials stored anywhere). Run standalone by Windows Task Scheduler;
-does not go through the MCP server, just reads the same SQLite file directly.
+"""Formats the current tracker state and emails it via Gmail (SMTP with an App
+Password — no OAuth/Cloud Console needed, since Gmail API's REST path requires
+Google's paid CASA security assessment for restricted-scope mail access,
+disproportionate for a personal tool). Run standalone by a GitHub Actions
+schedule; does not go through the MCP server, just reads the same database
+directly (via db.py, so it's Turso-aware).
 
-HTML is table-based with inline styles — Outlook's desktop rendering engine
-(Word) doesn't support flexbox/grid or external/embedded stylesheets reliably.
+HTML is table-based with inline styles for broad email client compatibility
+(many clients, including Outlook's desktop rendering engine, don't support
+flexbox/grid or external/embedded stylesheets reliably).
 """
 
 import os
+import smtplib
 import sys
 from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -20,6 +26,8 @@ from db import TaskStore  # noqa: E402
 DEFAULT_DB_PATH = Path(__file__).parent / "tasks.db"
 DB_PATH = os.environ.get("PMO_TRACKER_DB_PATH", str(DEFAULT_DB_PATH))
 RECIPIENT = os.environ.get("PMO_TRACKER_DIGEST_TO")  # must be set in .env — no hardcoded fallback
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 TEAM_TZ = ZoneInfo("Asia/Kolkata")
 
 HEADER_GREEN = "#1B4D3E"
@@ -153,15 +161,19 @@ def build_digest(store: TaskStore) -> tuple[str, str]:
     return subject, html
 
 
-def send_via_outlook(subject: str, html_body: str, to: str) -> None:
-    import win32com.client
+def send_via_gmail(subject: str, html_body: str, to: str) -> None:
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        raise RuntimeError("GMAIL_ADDRESS and GMAIL_APP_PASSWORD must be set in .env")
 
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    mail = outlook.CreateItem(0)  # olMailItem
-    mail.To = to
-    mail.Subject = subject
-    mail.HTMLBody = html_body
-    mail.Send()
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = to
+    msg.attach(MIMEText(html_body, "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_ADDRESS, [to], msg.as_string())
 
 
 def main() -> None:
@@ -170,7 +182,7 @@ def main() -> None:
         return
     store = TaskStore(DB_PATH)
     subject, html_body = build_digest(store)
-    send_via_outlook(subject, html_body, RECIPIENT)
+    send_via_gmail(subject, html_body, RECIPIENT)
     print(f"Sent: {subject}")
 
 

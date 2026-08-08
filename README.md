@@ -21,6 +21,8 @@ content.
 | `test_db.py` | Unit tests for `db.py` — run with `pytest` |
 | `pyproject.toml` | Tells Vercel where the Flask app is (`dashboard:app`) and what build step to run |
 | `build_vercel.py` | Vercel build step — mirrors `static/` into `public/static/`, since Vercel serves static assets from `public/**`, not a Flask app's own static folder |
+| `test_email_parsing.py` | Unit tests for the email-parsing helpers in `process_email_updates.py` |
+| `.github/workflows/pmo-cycle.yml` | Runs `run_cycle.py` twice daily via GitHub Actions — no local machine needed |
 
 Tasks have an `owner` (the one accountable person) and an optional
 `collaborators` field (comma-separated) for others helping on the same
@@ -41,9 +43,13 @@ the same SQL either way:
   instead: sign up free, create a database, and copy the Database URL and an
   Auth Token into `.env` (see `.env.example`). No CLI needed.
 
-Email still goes through Outlook desktop automation (via `pywin32`), which
-only works on a Windows machine with Outlook installed and you logged in —
-that part still needs replacing before this can run on a real host.
+Email now goes through Gmail via IMAP (read) and SMTP (send) with an App
+Password — not Outlook COM (which only works on a Windows machine with
+Outlook installed and logged in) and not the Gmail REST API either (its
+restricted-scope mail access requires Google's paid CASA security
+assessment to get a non-expiring token — disproportionate for a personal
+tool). An App Password sidesteps both problems: no OAuth, no Cloud Console,
+just `imaplib`/`smtplib` (both Python stdlib).
 
 Planned next steps to make this actually hosted:
 1. ~~Swap the SQLite file for a hosted database.~~ Done — see above.
@@ -54,11 +60,16 @@ Planned next steps to make this actually hosted:
    repo at [vercel.com](https://vercel.com) (sign in with GitHub), and set
    `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and `ANTHROPIC_API_KEY` as
    Environment Variables in the Vercel project settings — never commit them.
-3. Replace Outlook COM automation with the Microsoft Graph API, pointed at
-   a dedicated mailbox — needed regardless of host, since no server can
-   automate a desktop Outlook client.
-4. Move the twice-daily schedule from Windows Task Scheduler to a cron
-   trigger (e.g. a scheduled GitHub Actions workflow calling the hosted app).
+3. ~~Replace Outlook COM automation.~~ Done — see above. Requires
+   **2-Step Verification** enabled on the Gmail account, then an App
+   Password generated at myaccount.google.com -> Security -> App Passwords.
+4. ~~Move the twice-daily schedule off Windows Task Scheduler.~~ Done —
+   `.github/workflows/pmo-cycle.yml` runs `run_cycle.py` at 7:30 AM/PM IST
+   via GitHub Actions. Add these as repository secrets (Settings -> Secrets
+   and variables -> Actions): `ANTHROPIC_API_KEY`, `PMO_TRACKER_DIGEST_TO`,
+   `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `TURSO_DATABASE_URL`,
+   `TURSO_AUTH_TOKEN`. You can also trigger a run manually from the
+   Actions tab (workflow_dispatch) to test before waiting for the schedule.
 
 ## Running it locally (current, pre-hosting version)
 
