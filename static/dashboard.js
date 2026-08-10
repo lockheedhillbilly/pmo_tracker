@@ -1504,7 +1504,7 @@ document.getElementById("bulk-due-apply").onclick = async () => {
 };
 document.getElementById("bulk-clear").onclick = () => { selected.clear(); renderBulkbar(); renderBoard(); };
 
-const TAB_VIEWS = { board: "board-view", capture: "capture-view", project: "project-view", gantt: "gantt-view" };
+const TAB_VIEWS = { board: "board-view", capture: "capture-view", meetings: "meetings-view", project: "project-view", gantt: "gantt-view" };
 let projectContextLoaded = false;
 document.querySelectorAll(".tab").forEach(tab => {
   tab.onclick = () => {
@@ -1514,6 +1514,7 @@ document.querySelectorAll(".tab").forEach(tab => {
       document.getElementById(id).style.display = tab.dataset.tab === name ? "block" : "none";
     });
     if (tab.dataset.tab === "project" && !projectContextLoaded) loadProjectContext();
+    if (tab.dataset.tab === "meetings") loadMeetings();
   };
 });
 
@@ -1545,6 +1546,71 @@ document.getElementById("project-context-save-btn").addEventListener("click", as
     setTimeout(() => { statusEl.textContent = ""; }, 3000);
   }
 });
+
+// ---------- Meetings tab — populated by a separate local meeting-watcher/transcriber
+// process writing directly to Turso, not through any route in this app. Next-steps with
+// a clear owner get synced into real tasks server-side (see /api/meetings). ----------
+const MEETING_STATUS = {
+  pending: {label: "Pending", color: "var(--gray)"},
+  recording: {label: "Recording", color: "var(--red)"},
+  processing: {label: "Processing", color: "var(--amber)"},
+  done: {label: "Done", color: "var(--accent)"},
+  failed: {label: "Failed", color: "var(--red)"},
+};
+function meetingStatusBadge(status) {
+  const s = MEETING_STATUS[status] || {label: status, color: "var(--gray)"};
+  return `<span class="badge" style="background:${s.color}22;color:${s.color};">${esc(s.label)}</span>`;
+}
+function renderMeetingCard(m) {
+  const summary = m.summary || {};
+  const decisions = summary.decisions || [];
+  const nextSteps = summary.next_steps || [];
+  const when = m.start_time ? fmtDateTimeFull(m.start_time) : "";
+  const meta = [when, m.organizer, m.attendees].filter(Boolean).map(esc).join(" &middot; ");
+  return `
+    <div class="meeting-card">
+      <div class="meeting-card-header">
+        <div>
+          <div class="meeting-title">${esc(m.title)}</div>
+          <div class="added-text">${meta}</div>
+        </div>
+        ${meetingStatusBadge(m.status)}
+      </div>
+      ${summary.tl_dr ? `<div class="meeting-tldr">${esc(summary.tl_dr)}</div>` : ""}
+      ${decisions.length ? `<div class="meeting-section"><b>Decisions</b><ul>${decisions.map(d => `<li>${esc(d)}</li>`).join("")}</ul></div>` : ""}
+      ${nextSteps.length ? `<div class="meeting-section"><b>Next steps</b><ul>${nextSteps.map(s =>
+        `<li><b>${esc(s.owner || "")}</b>: ${esc(s.task || "")}${s.due ? ` (due ${esc(fmtDateShort(s.due))})` : ""}</li>`
+      ).join("")}</ul></div>` : ""}
+      <div class="meeting-actions">
+        ${m.transcript_text ? `<span class="meeting-link" data-toggle-transcript>Show transcript</span>` : ""}
+        ${m.drive_link ? `<a href="${esc(m.drive_link)}" target="_blank" rel="noopener" class="meeting-link">Drive link</a>` : ""}
+      </div>
+      ${m.transcript_text ? `<div class="meeting-transcript" style="display:none;">${esc(m.transcript_text)}</div>` : ""}
+    </div>`;
+}
+async function loadMeetings() {
+  const el = document.getElementById("meetings-list");
+  el.innerHTML = `<div class="added-text">Loading…</div>`;
+  try {
+    const r = await fetch("/api/meetings");
+    const meetings = await r.json();
+    if (!meetings.length) {
+      el.innerHTML = `<div class="added-text" style="padding:16px 0;">No meetings recorded yet.</div>`;
+      return;
+    }
+    el.innerHTML = meetings.map(renderMeetingCard).join("");
+    el.querySelectorAll("[data-toggle-transcript]").forEach(link => {
+      link.addEventListener("click", () => {
+        const body = link.closest(".meeting-card").querySelector(".meeting-transcript");
+        const open = body.style.display !== "none";
+        body.style.display = open ? "none" : "block";
+        link.textContent = open ? "Show transcript" : "Hide transcript";
+      });
+    });
+  } catch (err) {
+    el.innerHTML = `<div class="capture-result-item failed">Failed to load meetings: ${esc(err.message)}</div>`;
+  }
+}
 
 // ---------- Capture tab — the paste-to-parse trick already used in the add-row's task
 // input, but as a proper dedicated surface with room for a whole pasted email/meeting-notes

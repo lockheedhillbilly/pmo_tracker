@@ -103,7 +103,35 @@ SCHEMA_STATEMENTS = [
         value      TEXT NOT NULL,
         updated_at TEXT NOT NULL
     )""",
+    # Populated by a separate local process (a meeting watcher/transcriber
+    # on the user's machine) connecting to this same Turso database directly
+    # — not through this app's API. transcript_source is deliberately free
+    # text, not a CHECK-constrained enum: only 'local_whisper' exists today,
+    # but 'zoom_cloud'/'teams_graph' are expected later and shouldn't need a
+    # schema migration to add.
+    """CREATE TABLE IF NOT EXISTS meetings (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        title             TEXT NOT NULL,
+        start_time        TEXT NOT NULL,
+        end_time          TEXT,
+        organizer         TEXT,
+        attendees         TEXT,
+        join_url          TEXT,
+        transcript_source TEXT NOT NULL DEFAULT 'local_whisper',
+        transcript_text   TEXT,
+        summary           TEXT,
+        drive_link        TEXT,
+        status            TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending','recording','processing','done','failed')),
+        tasks_created     INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time)",
+    "CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status)",
 ]
+
+MEETING_STATUSES = ("pending", "recording", "processing", "done", "failed")
 
 # columns added after the original schema shipped — migrated in _connect()
 _MIGRATED_COLUMNS = {
@@ -293,6 +321,36 @@ class Note:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class Meeting:
+    id: int
+    title: str
+    start_time: str
+    end_time: str | None
+    organizer: str | None
+    attendees: str | None
+    join_url: str | None
+    transcript_source: str
+    transcript_text: str | None
+    summary: str | None
+    drive_link: str | None
+    status: str
+    tasks_created: bool
+    created_at: str
+    updated_at: str
+
+    @classmethod
+    def from_row(cls, row: libsql_client.Row) -> "Meeting":
+        d = row.asdict()
+        d["tasks_created"] = bool(d["tasks_created"])
+        return cls(**d)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["summary"] = json.loads(self.summary) if self.summary else None
+        return d
 
 
 class TaskStore:
@@ -686,3 +744,111 @@ class TaskStore:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                 (key, value, _now_ist().isoformat()),
             )
+
+    # ---------- Meetings (populated by a separate local watcher/transcriber
+    # process connecting to this same database directly) ----------
+
+    def add_meeting(
+        self,
+        title: str,
+        start_time: str,
+        organizer: str | None = None,
+        attendees: str | None = None,
+        join_url: str | None = None,
+        transcript_source: str = "local_whisper",
+        status: str = "pending",
+    ) -> dict:
+        if status not in MEETING_STATUSES:
+            raise TrackerError(f"status must be one of {MEETING_STATUSES}, got {status!r}")
+        if not title or not title.strip():
+            raise TrackerError("title is required")
+        now = _now_ist().isoformat()
+        with _connect(self.db_path) as conn:
+            cur = conn.execute(
+                """INSERT INTO meetings
+                   (title, start_time, organizer, attendees, join_url, transcript_source,
+                    status, tasks_created, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+                (title.strip(), start_time, organizer, attendees, join_url,
+                 transcript_source, status, now, now),
+            )
+            row = conn.execute("SELECT * FROM meetings WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return Meeting.from_row(row).to_dict()
+
+    def update_meeting(
+        self,
+        id: int,
+        end_time: str | None = None,
+        transcript_source: str | None = None,
+        transcript_text: str | None = None,
+        summary: dict | str | None = None,
+        drive_link: str | None = None,
+        status: str | None = None,
+    ) -> dict:
+        if status is not None and status not in MEETING_STATUSES:
+            raise TrackerError(f"status must be one of {MEETING_STATUSES}, got {status!r}")
+
+        fields = {
+            "end_time": end_time, "transcript_source": transcript_source,
+            "transcript_text": transcript_text, "drive_link": drive_link, "status": status,
+        }
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if summary is not None:
+            fields["summary"] = json.dumps(summary) if isinstance(summary, dict) else summary
+
+        if not fields:
+            raise TrackerError("no fields to update")
+        fields["updated_at"] = _now_ist().isoformat()
+
+        with _connect(self.db_path) as conn:
+            existing = conn.execute("SELECT id FROM meetings WHERE id = ?", (id,)).fetchone()
+            if existing is None:
+                raise TrackerError(f"no meeting with id {id}")
+            set_clause = ", ".join(f"{k} = ?" for k in fields)
+            conn.execute(f"UPDATE meetings SET {set_clause} WHERE id = ?", (*fields.values(), id))
+            row = conn.execute("SELECT * FROM meetings WHERE id = ?", (id,)).fetchone()
+        return Meeting.from_row(row).to_dict()
+
+    def list_meetings(self, limit: int = 50) -> list[dict]:
+        with _connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM meetings ORDER BY start_time DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [Meeting.from_row(r).to_dict() for r in rows]
+
+    def get_meeting(self, id: int) -> dict | None:
+        with _connect(self.db_path) as conn:
+            row = conn.execute("SELECT * FROM meetings WHERE id = ?", (id,)).fetchone()
+        return Meeting.from_row(row).to_dict() if row else None
+
+    def sync_meeting_tasks(self) -> list[dict]:
+        """Turn any newly-'done' meeting's next_steps into real tasks, tagged with a
+        source identifying which meeting they came from. Safe to call repeatedly —
+        tasks_created gates it so a meeting's next_steps are only ever applied once."""
+        with _connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM meetings WHERE status = 'done' AND tasks_created = 0"
+            ).fetchall()
+
+        created = []
+        for row in rows:
+            m = Meeting.from_row(row).to_dict()
+            next_steps = (m.get("summary") or {}).get("next_steps") or []
+            date_str = (m["start_time"] or "")[:10]
+            source_tag = f"Meeting: {m['title']} ({date_str})"
+            for step in next_steps:
+                try:
+                    created.append(self.add_task(
+                        track=step["track"],
+                        owner=step["owner"],
+                        task=step["task"],
+                        module=step.get("module"),
+                        due=step.get("due"),
+                        priority=step.get("priority", "Normal"),
+                        source=source_tag,
+                    ))
+                except (TrackerError, KeyError):
+                    continue  # skip a malformed next_step rather than fail the whole sync
+            with _connect(self.db_path) as conn:
+                conn.execute("UPDATE meetings SET tasks_created = 1 WHERE id = ?", (m["id"],))
+        return created

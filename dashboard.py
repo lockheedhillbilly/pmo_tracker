@@ -257,5 +257,22 @@ def save_project_context():
     return jsonify({"ok": True})
 
 
+@app.get("/api/meetings")
+def get_meetings():
+    # A separate local process writes meeting records directly to Turso, not
+    # through this API — sync here (and in run_cycle.py) picks up any
+    # newly-'done' meeting's next_steps as real tasks before listing.
+    store.sync_meeting_tasks()
+    return jsonify(store.list_meetings())
+
+
+@app.get("/api/meetings/<int:meeting_id>")
+def get_meeting_detail(meeting_id):
+    meeting = store.get_meeting(meeting_id)
+    if meeting is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(meeting)
+
+
 if __name__ == "__main__":
     app.run(port=int(os.environ.get("PMO_TRACKER_PORT", 5057)), debug=False)

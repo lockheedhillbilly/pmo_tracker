@@ -309,3 +309,106 @@ def test_set_setting_overwrites_existing_value(store):
     store.set_setting("project_context", "v1")
     store.set_setting("project_context", "v2")
     assert store.get_setting("project_context") == "v2"
+
+
+# ---------- Meetings ----------
+
+def test_add_meeting_minimal(store):
+    m = store.add_meeting(title="Weekly sync", start_time="2026-08-10T10:00:00+05:30")
+    assert m["id"] > 0
+    assert m["status"] == "pending"
+    assert m["transcript_source"] == "local_whisper"
+    assert m["tasks_created"] is False
+    assert m["summary"] is None
+
+
+def test_add_meeting_rejects_bad_status(store):
+    with pytest.raises(TrackerError):
+        store.add_meeting(title="X", start_time="2026-08-10T10:00:00", status="bogus")
+
+
+def test_add_meeting_requires_title(store):
+    with pytest.raises(TrackerError):
+        store.add_meeting(title="  ", start_time="2026-08-10T10:00:00")
+
+
+def test_update_meeting_progresses_status_and_stores_summary(store):
+    m = store.add_meeting(title="Weekly sync", start_time="2026-08-10T10:00:00+05:30")
+    store.update_meeting(id=m["id"], status="recording")
+    updated = store.update_meeting(
+        id=m["id"], status="done", transcript_text="...", drive_link="https://drive/x",
+        summary={"tl_dr": "Discussed X", "decisions": ["Go with Y"], "next_steps": [], "notes": ""},
+    )
+    assert updated["status"] == "done"
+    assert updated["transcript_text"] == "..."
+    assert updated["drive_link"] == "https://drive/x"
+    assert updated["summary"]["tl_dr"] == "Discussed X"
+
+
+def test_update_meeting_unknown_id_raises(store):
+    with pytest.raises(TrackerError):
+        store.update_meeting(id=9999, status="done")
+
+
+def test_update_meeting_no_fields_raises(store):
+    m = store.add_meeting(title="X", start_time="2026-08-10T10:00:00")
+    with pytest.raises(TrackerError):
+        store.update_meeting(id=m["id"])
+
+
+def test_list_meetings_most_recent_first(store):
+    store.add_meeting(title="Earlier", start_time="2026-08-01T10:00:00")
+    store.add_meeting(title="Later", start_time="2026-08-05T10:00:00")
+    meetings = store.list_meetings()
+    assert [m["title"] for m in meetings] == ["Later", "Earlier"]
+
+
+def test_get_meeting_returns_none_when_missing(store):
+    assert store.get_meeting(9999) is None
+
+
+def test_sync_meeting_tasks_creates_tasks_from_next_steps(store):
+    m = store.add_meeting(title="Planning call", start_time="2026-08-10T10:00:00")
+    store.update_meeting(
+        id=m["id"], status="done",
+        summary={
+            "tl_dr": "Planned next sprint", "decisions": [], "notes": "",
+            "next_steps": [
+                {"owner": "Aayushi", "task": "Review test cases", "track": "Data"},
+                {"owner": "Sparsh", "task": "Fix pipeline bug", "track": "Tech", "priority": "High"},
+            ],
+        },
+    )
+    created = store.sync_meeting_tasks()
+    assert len(created) == 2
+    assert {c["owner"] for c in created} == {"Aayushi", "Sparsh"}
+    assert all(c["source"] == "Meeting: Planning call (2026-08-10)" for c in created)
+    tasks = store.list_tasks()
+    assert len(tasks) == 2
+
+
+def test_sync_meeting_tasks_is_idempotent(store):
+    m = store.add_meeting(title="Planning call", start_time="2026-08-10T10:00:00")
+    store.update_meeting(
+        id=m["id"], status="done",
+        summary={"next_steps": [{"owner": "Aayushi", "task": "X", "track": "Data"}]},
+    )
+    first = store.sync_meeting_tasks()
+    second = store.sync_meeting_tasks()
+    assert len(first) == 1
+    assert len(second) == 0  # tasks_created flag prevents re-applying
+    assert len(store.list_tasks()) == 1
+
+
+def test_sync_meeting_tasks_skips_malformed_next_step(store):
+    m = store.add_meeting(title="Planning call", start_time="2026-08-10T10:00:00")
+    store.update_meeting(
+        id=m["id"], status="done",
+        summary={"next_steps": [
+            {"owner": "Aayushi", "task": "Good one", "track": "Data"},
+            {"task": "Missing owner", "track": "Data"},  # malformed — skipped, not fatal
+        ]},
+    )
+    created = store.sync_meeting_tasks()
+    assert len(created) == 1
+    assert created[0]["task"] == "Good one"
