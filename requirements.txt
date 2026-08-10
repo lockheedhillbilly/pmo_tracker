@@ -1,6 +1,9 @@
 # Web dashboard
 flask>=3.0
 
+# Formatted Excel export (styled header, column widths, filter dropdowns)
+openpyxl>=3.1
+
 # Windows doesn't ship the IANA timezone database that zoneinfo (used for
 # Asia/Kolkata in db.py) expects — this supplies it. Harmless on other OSes.
 tzdata>=2024.1

@@ -7,6 +7,7 @@ validates, computes defaults, and persists.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from contextlib import contextmanager
@@ -80,6 +81,28 @@ SCHEMA_STATEMENTS = [
         subject      TEXT,
         processed_at TEXT NOT NULL
     )""",
+    # Audit trail: one row per field that actually changed on an update_task call.
+    """CREATE TABLE IF NOT EXISTS history (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id    INTEGER NOT NULL,
+        field      TEXT NOT NULL,
+        old_value  TEXT,
+        new_value  TEXT,
+        changed_by TEXT NOT NULL,
+        changed_at TEXT NOT NULL,
+        FOREIGN KEY(task_id) REFERENCES tasks(id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_history_task ON history(task_id)",
+    "CREATE INDEX IF NOT EXISTS idx_history_changed_at ON history(changed_at)",
+    # Generic small key/value store — e.g. the editable project-context doc.
+    # A real file on disk isn't viable here since Vercel's filesystem is
+    # read-only at runtime; this is the one thing in this file NOT reachable
+    # from a hosted read-only filesystem, so it needs the database instead.
+    """CREATE TABLE IF NOT EXISTS settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
 ]
 
 # columns added after the original schema shipped — migrated in _connect()
@@ -92,6 +115,8 @@ _MIGRATED_COLUMNS = {
     "review_due": "TEXT",
     "review_comment": "TEXT",
     "collaborators": "TEXT",
+    "blocked_by_id": "INTEGER",
+    "custom_fields": "TEXT",
 }
 
 
@@ -186,6 +211,10 @@ def _connect(db_path: Path):
                     conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {sqltype}")
             if "sort_order" not in cols:
                 conn.execute("UPDATE tasks SET sort_order = id * 10 WHERE sort_order IS NULL")
+            # "not mentioned" should default to a real state, for old rows and new ones alike —
+            # idempotent, cheap enough to just run once per schema-ready target.
+            conn.execute("UPDATE tasks SET execution_state = 'Not started' WHERE execution_state IS NULL OR execution_state = ''")
+            conn.execute("UPDATE tasks SET custom_fields = '{}' WHERE custom_fields IS NULL OR custom_fields = ''")
             _schema_ready.add(target)
         yield conn
     finally:
@@ -214,12 +243,34 @@ class Task:
     review_type: str | None
     review_due: str | None
     review_comment: str | None
+    blocked_by_id: int | None
+    custom_fields: str | None
 
     @classmethod
     def from_row(cls, row: libsql_client.Row) -> "Task":
         d = row.asdict()
         d["due_assumed"] = bool(d["due_assumed"])
         return cls(**d)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["custom_fields"] = json.loads(self.custom_fields) if self.custom_fields else {}
+        return d
+
+
+@dataclass
+class HistoryEntry:
+    id: int
+    task_id: int
+    field: str
+    old_value: str | None
+    new_value: str | None
+    changed_by: str
+    changed_at: str
+
+    @classmethod
+    def from_row(cls, row: libsql_client.Row) -> "HistoryEntry":
+        return cls(**row.asdict())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -259,6 +310,7 @@ class TaskStore:
         status: str = "Open",
         source: str | None = None,
         collaborators: str | None = None,
+        execution_state: str | None = None,
     ) -> dict:
         if track not in TRACKS:
             raise TrackerError(f"track must be one of {TRACKS}, got {track!r}")
@@ -266,6 +318,8 @@ class TaskStore:
             raise TrackerError(f"priority must be one of {PRIORITIES}, got {priority!r}")
         if status not in STATUSES:
             raise TrackerError(f"status must be one of {STATUSES}, got {status!r}")
+        if execution_state and execution_state not in EXECUTION_STATES:
+            raise TrackerError(f"execution_state must be one of {EXECUTION_STATES}, got {execution_state!r}")
         if not owner or not owner.strip():
             raise TrackerError("owner is required")
         if not task or not task.strip():
@@ -274,18 +328,20 @@ class TaskStore:
         due_assumed = due is None
         due_date = due if due else end_of_work_week().isoformat()
         collaborators = _normalize_collaborators(collaborators)
+        execution_state = execution_state or "Not started"  # "not mentioned" defaults to a real state
 
         now = _now_ist()
         with _connect(self.db_path) as conn:
             max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks").fetchone()[0]
             cur = conn.execute(
                 """INSERT INTO tasks
-                   (track, module, owner, collaborators, task, added, due, due_assumed, priority, status, updated_at, source, sort_order)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (track, module, owner, collaborators, task, added, due, due_assumed, priority, status,
+                    updated_at, source, sort_order, execution_state, custom_fields)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     track, module, owner.strip(), collaborators, task.strip(),
                     now.date().isoformat(), due_date, int(due_assumed),
-                    priority, status, now.isoformat(), source, max_order + 10,
+                    priority, status, now.isoformat(), source, max_order + 10, execution_state, "{}",
                 ),
             )
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -296,9 +352,10 @@ class TaskStore:
             existing = conn.execute("SELECT id FROM tasks WHERE id = ?", (id,)).fetchone()
             if existing is None:
                 raise TrackerError(f"no task with id {id}")
-            # Local SQLite doesn't enforce the notes->tasks foreign key by default,
-            # but Turso does — delete notes first so this works on both.
+            # Local SQLite doesn't enforce foreign keys by default, but Turso
+            # does — delete dependents first so this works on both.
             conn.execute("DELETE FROM notes WHERE task_id = ?", (id,))
+            conn.execute("DELETE FROM history WHERE task_id = ?", (id,))
             conn.execute("DELETE FROM tasks WHERE id = ?", (id,))
 
     def reorder(self, id_order: list[int]) -> None:
@@ -326,6 +383,10 @@ class TaskStore:
         review_due: str | None = None,
         review_comment: str | None = None,
         clear_review: bool = False,
+        blocked_by_id: int | None = None,
+        clear_blocked_by: bool = False,
+        custom_fields: dict | None = None,
+        changed_by: str | None = None,
     ) -> dict:
         if track is not None and track not in TRACKS:
             raise TrackerError(f"track must be one of {TRACKS}, got {track!r}")
@@ -339,12 +400,15 @@ class TaskStore:
             raise TrackerError(f"review_status must be one of {REVIEW_STATUSES}, got {review_status!r}")
         if review_type is not None and review_type not in REVIEW_TYPES:
             raise TrackerError(f"review_type must be one of {REVIEW_TYPES}, got {review_type!r}")
+        if blocked_by_id is not None and blocked_by_id == id:
+            raise TrackerError("a task cannot be blocked by itself")
 
         fields = {"track": track, "module": module, "owner": owner,
                   "collaborators": _normalize_collaborators(collaborators), "task": task,
                   "priority": priority, "status": status, "execution_state": execution_state,
                   "review_status": review_status, "reviewer": reviewer, "review_type": review_type,
-                  "review_due": review_due, "review_comment": review_comment}
+                  "review_due": review_due, "review_comment": review_comment,
+                  "blocked_by_id": blocked_by_id}
         fields = {k: v for k, v in fields.items() if v is not None}
         if due is not None:
             fields["due"] = due
@@ -352,20 +416,79 @@ class TaskStore:
         if clear_review:
             fields.update({"review_status": None, "reviewer": None, "review_type": None,
                            "review_due": None, "review_comment": None})
-
-        if not fields:
-            raise TrackerError("no fields to update")
-
-        fields["updated_at"] = _now_ist().isoformat()
+        if clear_blocked_by:
+            fields["blocked_by_id"] = None
 
         with _connect(self.db_path) as conn:
-            existing = conn.execute("SELECT id FROM tasks WHERE id = ?", (id,)).fetchone()
+            existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone()
             if existing is None:
                 raise TrackerError(f"no task with id {id}")
+            if blocked_by_id is not None:
+                blocker = conn.execute("SELECT id FROM tasks WHERE id = ?", (blocked_by_id,)).fetchone()
+                if blocker is None:
+                    raise TrackerError(f"no task with id {blocked_by_id} to block on")
+            if custom_fields:
+                merged = json.loads(existing["custom_fields"] or "{}")
+                merged.update(custom_fields)
+                fields["custom_fields"] = json.dumps(merged)
+
+            if not fields:
+                raise TrackerError("no fields to update")
+
+            # Audit trail: one history row per field that's actually changing, skipping the
+            # due_assumed side-effect (it's not a field anyone edits directly) and no-op writes
+            # (e.g. re-selecting the same value) so the log stays meaningful, not noisy.
+            now_iso = _now_ist().isoformat()
+            history_rows = []
+            for key, new_val in fields.items():
+                if key == "due_assumed":
+                    continue
+                old_val = existing[key]
+                if str(old_val) == str(new_val):
+                    continue
+                history_rows.append((id, key, old_val, new_val, changed_by or "Unknown", now_iso))
+
+            fields["updated_at"] = now_iso
             set_clause = ", ".join(f"{k} = ?" for k in fields)
             conn.execute(f"UPDATE tasks SET {set_clause} WHERE id = ?", (*fields.values(), id))
+            for h in history_rows:
+                conn.execute(
+                    "INSERT INTO history (task_id, field, old_value, new_value, changed_by, changed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    h,
+                )
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone()
         return Task.from_row(row).to_dict()
+
+    def list_history(self, task_id: int) -> list[dict]:
+        with _connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM history WHERE task_id = ? ORDER BY changed_at DESC", (task_id,)
+            ).fetchall()
+        return [HistoryEntry.from_row(r).to_dict() for r in rows]
+
+    def list_recent_history(
+        self, since: str | None = None, until: str | None = None, limit: int = 200,
+    ) -> list[dict]:
+        """Across all tasks — powers the activity feed and the sidebar's
+        day-by-day activity browser (since+until bound a single day's window)."""
+        with _connect(self.db_path) as conn:
+            query = (
+                "SELECT h.*, t.task AS task_title FROM history h JOIN tasks t ON t.id = h.task_id"
+            )
+            clauses, params = [], []
+            if since:
+                clauses.append("h.changed_at > ?")
+                params.append(since)
+            if until:
+                clauses.append("h.changed_at <= ?")
+                params.append(until)
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            query += " ORDER BY h.changed_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+        return [r.asdict() for r in rows]
 
     def list_tasks(
         self,
@@ -380,8 +503,11 @@ class TaskStore:
     ) -> list[dict]:
         clauses, params = [], []
         if owner:
-            clauses.append("owner LIKE ?")
-            params.append(f"%{owner}%")
+            # Matches collaborators too — a name filter for Sparsh should also surface
+            # a task where he's a collaborator (e.g. owner=Abhishek, collaborators=Sparsh),
+            # not just tasks where he's the primary owner.
+            clauses.append("(owner LIKE ? OR collaborators LIKE ?)")
+            params.extend([f"%{owner}%", f"%{owner}%"])
         if track:
             clauses.append("track = ?")
             params.append(track)
@@ -547,3 +673,16 @@ class TaskStore:
             "completed_recently": completed_recently,
             "by_owner": by_owner,
         }
+
+    def get_setting(self, key: str) -> str | None:
+        with _connect(self.db_path) as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        with _connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, _now_ist().isoformat()),
+            )

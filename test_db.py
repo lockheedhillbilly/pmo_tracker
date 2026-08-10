@@ -32,6 +32,19 @@ def test_add_task_minimal(store):
     assert t["status"] == "Open"
     assert t["priority"] == "Normal"
     assert t["collaborators"] is None
+    assert t["execution_state"] == "Not started"
+    assert t["custom_fields"] == {}
+    assert t["blocked_by_id"] is None
+
+
+def test_add_task_explicit_execution_state(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X", execution_state="Blocked")
+    assert t["execution_state"] == "Blocked"
+
+
+def test_add_task_rejects_bad_execution_state(store):
+    with pytest.raises(TrackerError):
+        store.add_task(track="Discovery", owner="Aayushi", task="X", execution_state="Nope")
 
 
 def test_add_task_due_defaults_to_end_of_work_week(store):
@@ -121,12 +134,14 @@ def test_delete_task(store):
 
 
 def test_delete_task_also_deletes_its_notes(store):
-    """Local SQLite doesn't enforce the notes->tasks foreign key by default, but
-    Turso does — deleting a task with notes must not leave them (or fail)."""
+    """Local SQLite doesn't enforce foreign keys by default, but Turso does —
+    deleting a task with notes/history must not leave them (or fail)."""
     t = store.add_task(track="Discovery", owner="Aayushi", task="X")
     store.add_note(t["id"], author="Akshit", text="Some note")
+    store.update_task(id=t["id"], status="Done", changed_by="Akshit")  # creates a history row too
     store.delete_task(t["id"])
     assert store.list_notes(t["id"]) == []
+    assert store.list_history(t["id"]) == []
 
 
 def test_list_tasks_filters_by_owner_and_status(store):
@@ -137,6 +152,17 @@ def test_list_tasks_filters_by_owner_and_status(store):
     assert len(store.list_tasks(owner="Aayushi")) == 1
     assert len(store.list_tasks(status="Open")) == 1
     assert len(store.list_tasks(status="Done")) == 1
+
+
+def test_list_tasks_owner_filter_matches_collaborators_too(store):
+    store.add_task(track="Discovery", owner="Sparsh", task="A", collaborators="Abhishek")
+    store.add_task(track="Discovery", owner="Aayushi", task="B")
+
+    sparsh_tasks = store.list_tasks(owner="Sparsh")
+    abhishek_tasks = store.list_tasks(owner="Abhishek")
+    assert len(sparsh_tasks) == 1
+    assert len(abhishek_tasks) == 1
+    assert sparsh_tasks[0]["id"] == abhishek_tasks[0]["id"]
 
 
 def test_reorder_sets_sort_order(store):
@@ -194,3 +220,92 @@ def test_note_summaries_include_latest_id_and_author(store):
     summaries = store.note_summaries()
     assert summaries[t["id"]]["latest_id"] == note["id"]
     assert summaries[t["id"]]["latest_author"] == "Akshit"
+
+
+# ---------- Audit trail ----------
+
+def test_update_task_logs_history(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    store.update_task(id=t["id"], status="Done", priority="High", changed_by="Akshit")
+    history = store.list_history(t["id"])
+    fields_changed = {h["field"] for h in history}
+    assert fields_changed == {"status", "priority"}
+    status_entry = next(h for h in history if h["field"] == "status")
+    assert status_entry["old_value"] == "Open"
+    assert status_entry["new_value"] == "Done"
+    assert status_entry["changed_by"] == "Akshit"
+
+
+def test_update_task_skips_history_for_unchanged_values(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X", priority="High")
+    store.update_task(id=t["id"], priority="High", changed_by="Akshit")  # re-selecting same value
+    assert store.list_history(t["id"]) == []
+
+
+def test_update_task_without_changed_by_logs_unknown(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    store.update_task(id=t["id"], status="Done")
+    assert store.list_history(t["id"])[0]["changed_by"] == "Unknown"
+
+
+def test_list_recent_history_across_tasks(store):
+    t1 = store.add_task(track="Discovery", owner="Aayushi", task="A")
+    t2 = store.add_task(track="Discovery", owner="Sparsh", task="B")
+    store.update_task(id=t1["id"], status="Done", changed_by="Akshit")
+    store.update_task(id=t2["id"], priority="High", changed_by="Akshit")
+    recent = store.list_recent_history()
+    assert len(recent) == 2
+    assert {r["task_title"] for r in recent} == {"A", "B"}
+
+
+def test_list_recent_history_bounded_by_until(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="A")
+    store.update_task(id=t["id"], status="Done", changed_by="Akshit")
+    changed_at = store.list_history(t["id"])[0]["changed_at"]
+    assert store.list_recent_history(until=changed_at) == store.list_recent_history()
+    assert store.list_recent_history(since=changed_at) == []
+
+
+# ---------- Dependencies (blocked_by_id) ----------
+
+def test_set_and_clear_blocked_by(store):
+    blocker = store.add_task(track="Discovery", owner="Aayushi", task="Blocker")
+    blocked = store.add_task(track="Discovery", owner="Sparsh", task="Blocked")
+    updated = store.update_task(id=blocked["id"], blocked_by_id=blocker["id"])
+    assert updated["blocked_by_id"] == blocker["id"]
+    cleared = store.update_task(id=blocked["id"], clear_blocked_by=True)
+    assert cleared["blocked_by_id"] is None
+
+
+def test_blocked_by_rejects_self_and_missing_task(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    with pytest.raises(TrackerError):
+        store.update_task(id=t["id"], blocked_by_id=t["id"])
+    with pytest.raises(TrackerError):
+        store.update_task(id=t["id"], blocked_by_id=9999)
+
+
+# ---------- Custom fields ----------
+
+def test_custom_fields_merge_not_replace(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    store.update_task(id=t["id"], custom_fields={"Risk": "High"})
+    updated = store.update_task(id=t["id"], custom_fields={"Effort": "3d"})
+    assert updated["custom_fields"] == {"Risk": "High", "Effort": "3d"}
+
+
+# ---------- Settings (project-context doc) ----------
+
+def test_get_setting_returns_none_when_unset(store):
+    assert store.get_setting("project_context") is None
+
+
+def test_set_and_get_setting(store):
+    store.set_setting("project_context", "# Team\n- Akshit: PL")
+    assert store.get_setting("project_context") == "# Team\n- Akshit: PL"
+
+
+def test_set_setting_overwrites_existing_value(store):
+    store.set_setting("project_context", "v1")
+    store.set_setting("project_context", "v2")
+    assert store.get_setting("project_context") == "v2"

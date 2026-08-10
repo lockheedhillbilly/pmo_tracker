@@ -2,27 +2,43 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PMO Tracker</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
 </head>
 <body>
 <header>
   <div class="header-left">
+    <button class="icon-btn sidebar-toggle-btn" id="sidebar-toggle-btn" title="Menu">&#9776;</button>
     <span class="brand-mark">&#9670;</span>
     <div>
       <h1>PMO Tracker</h1>
       <div class="header-sub">Akshit's personal tracker</div>
     </div>
   </div>
-  <div class="tabs">
-    <div class="tab active" data-tab="board">Board</div>
-    <div class="tab" data-tab="gantt">Gantt</div>
+  <div class="header-right">
+    <button class="icon-btn bell-btn" id="activity-btn" title="Recent activity"><span class="bell-dot" id="activity-dot" style="display:none;"></span></button>
+    <div class="tabs">
+      <div class="tab active" data-tab="board">Board</div>
+      <div class="tab" data-tab="capture">Capture</div>
+      <div class="tab" data-tab="project">Project</div>
+      <div class="tab" data-tab="gantt">Gantt</div>
+    </div>
   </div>
 </header>
 <div class="app-shell">
-  <nav class="sidebar">
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <nav class="sidebar" id="sidebar">
     <div class="sidebar-label">Views</div>
     <div id="sidebar-nav"></div>
+    <div class="sidebar-label" style="margin-top:16px;">Group by</div>
+    <div id="sidebar-groupby"></div>
+    <div class="sidebar-label" style="margin-top:16px;">Display</div>
+    <button class="nav-item" id="settings-btn" style="width:100%;text-align:left;border:none;background:none;">Settings&hellip;</button>
+    <div class="sidebar-label" style="margin-top:16px;">Activity (last 15 days)</div>
+    <div id="sidebar-activity-days"></div>
+    <div class="sidebar-label" style="margin-top:16px;">Export</div>
+    <a href="/api/export.xlsx" class="nav-item" id="sidebar-export-link">Export Excel</a>
   </nav>
   <main>
     <div id="board-view">
@@ -31,33 +47,12 @@
 
       <div class="toolbar">
         <div class="left">
-          <label>Group by
-            <select id="view-by">
-              <option value="flat">Flat list</option>
-              <option value="module" selected>Use case</option>
-              <option value="owner">Owner</option>
-              <option value="week">Week</option>
-              <option value="status">Status</option>
-              <option value="review">Review</option>
-            </select>
-          </label>
-          <label>Then by
-            <select id="then-by">
-              <option value="none">None</option>
-              <option value="module">Use case</option>
-              <option value="owner">Owner</option>
-              <option value="week">Week</option>
-              <option value="status">Status</option>
-              <option value="review">Review</option>
-            </select>
-          </label>
           <input type="text" class="search" id="f-search" placeholder="Search tasks... (Ctrl+K)">
         </div>
         <div class="right">
           <button class="secondary small" id="expand-all-btn">Expand all</button>
           <button class="secondary small" id="collapse-all-btn">Collapse all</button>
-          <button class="secondary small" id="filters-btn">Filters</button>
-          <button class="secondary small icon-btn" id="settings-btn" title="View settings">&#9881;</button>
+          <button class="secondary small" id="filters-btn" style="display:none;">Clear filters</button>
           <button id="add-btn">+ Add task</button>
         </div>
       </div>
@@ -81,6 +76,30 @@
           <thead><tr id="header-row"></tr></thead>
           <tbody id="task-rows"></tbody>
         </table>
+      </div>
+    </div>
+    <div id="capture-view" style="display:none;">
+      <div class="capture-wrap">
+        <div class="sidebar-label" style="padding-left:0;">Paste notes, meeting minutes, or an email body</div>
+        <textarea id="capture-input" rows="14" placeholder="Paste anything here — e.g. &quot;Sparsh to pull HGI numbers by Friday. Aayushi done with LinkedIn sync. Mark #12 as blocked.&quot;"></textarea>
+        <div class="capture-actions">
+          <button id="capture-parse-btn">Parse &amp; Apply</button>
+          <button class="secondary" id="capture-clear-btn">Clear</button>
+        </div>
+        <div id="capture-results"></div>
+      </div>
+    </div>
+    <div id="project-view" style="display:none;">
+      <div class="capture-wrap">
+        <div class="sidebar-label" style="padding-left:0;">
+          Team, workstreams, and default-ownership rules — the parser reads this to
+          infer an owner when a note doesn't state one. Edit any time the project changes.
+        </div>
+        <textarea id="project-context-input" rows="24" placeholder="Loading..."></textarea>
+        <div class="capture-actions">
+          <button id="project-context-save-btn">Save</button>
+        </div>
+        <div id="project-context-status"></div>
       </div>
     </div>
     <div id="gantt-view" style="display:none;">

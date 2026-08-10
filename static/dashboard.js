@@ -20,6 +20,9 @@ const ICONS = {
   plusCircle: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><line x1="12" y1="7.5" x2="12" y2="16.5"/><line x1="7.5" y1="12" x2="16.5" y2="12"/></svg>',
   bookmark: '<svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-4-5 4V4z"/></svg>',
   sliders: '<svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><circle cx="14" cy="6" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="9" cy="12" r="2"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="16" cy="18" r="2"/></svg>',
+  bell: '<svg viewBox="0 0 24 24"><path d="M6 10a6 6 0 1 1 12 0v5l2 3H4l2-3v-5z"/><path d="M9.5 20a2.5 2.5 0 0 0 5 0"/></svg>',
+  download: '<svg viewBox="0 0 24 24"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg>',
+  link: '<svg viewBox="0 0 24 24"><path d="M9 15l6-6"/><path d="M8 16l-2 2a3.5 3.5 0 1 1-5-5l4-4a3.5 3.5 0 0 1 5 0"/><path d="M16 8l2-2a3.5 3.5 0 1 1 5 5l-4 4a3.5 3.5 0 0 1-5 0"/></svg>',
 };
 function icon(name, cls) {
   const svg = ICONS[name];
@@ -43,6 +46,16 @@ const DEFAULT_COLUMNS = ["module","owner","task","added","due","priority","execu
 // showing one just for it to say "No filter for this column" is dead UI that eats column width.
 const FILTERABLE_COLUMNS = new Set(["module","owner","priority","due"]);
 
+// User-defined columns backed by the generic custom_fields JSON blob on each task. The list of
+// field NAMES lives in localStorage (there's no server-side schema for these); registering one
+// just extends ALL_COLUMNS with a "custom:<name>" key so it behaves like any other column —
+// same rendering, same editable-cell/startEdit path, same columns-manager toggle.
+function loadCustomFieldNames() { return JSON.parse(localStorage.getItem("pmo_custom_fields") || "[]"); }
+function registerCustomField(name) {
+  ALL_COLUMNS["custom:" + name] = { label: name, width: "110px" };
+}
+loadCustomFieldNames().forEach(registerCustomField);
+
 let TASKS = [], NOTE_COUNTS = {};
 let selected = new Set();
 let activeRowId = null;
@@ -52,10 +65,16 @@ let searchQ = "";
 let sortCol = null, sortDir = 1;
 let hideCompleted = false;
 let density = localStorage.getItem("pmo_density") || "comfortable";
-let viewBy = "module", thenBy = "none";
+// Ordered pivot: groupLevels[0] is the outermost grouping, [1] nests inside it, etc.
+// Empty array = flat list. Replaces the old single viewBy/thenBy pair.
+const GROUP_DIMENSIONS = [
+  {key:"module", label:"Use case"}, {key:"owner", label:"Owner"}, {key:"week", label:"Week"},
+  {key:"status", label:"Status"}, {key:"review", label:"Review"},
+];
+let groupLevels = ["module"];
 let collapsedGroups = new Set();
 let activeGroupAddRows = new Set();
-let columns = loadColumnsForView(viewBy);
+let columns = loadColumnsForView(groupLevels[0] || "flat");
 let columnWidths = JSON.parse(localStorage.getItem("pmo_col_widths_v2") || "{}");
 let addDefaults = { owner: "", module: "", track: "Discovery", due: tomorrow() };
 let dragRowId = null, dragCol = null;
@@ -64,7 +83,7 @@ function loadColumnsForView(vb) {
   const raw = localStorage.getItem("pmo_cols_v2_" + vb);
   return raw ? JSON.parse(raw) : DEFAULT_COLUMNS.slice();
 }
-function saveColumnsForView() { localStorage.setItem("pmo_cols_v2_" + viewBy, JSON.stringify(columns)); }
+function saveColumnsForView() { localStorage.setItem("pmo_cols_v2_" + (groupLevels[0] || "flat"), JSON.stringify(columns)); }
 
 function today() { return new Date().toISOString().slice(0,10); }
 function fmtDateShort(d) { return new Date(d+"T00:00:00").toLocaleDateString('en-GB', {day:'numeric', month:'short'}); }
@@ -131,10 +150,14 @@ function renderSummary() {
   const dueWeek = TASKS.filter(t => t.status === "Open" && t.due >= mon.toISOString().slice(0,10) && t.due <= sun.toISOString().slice(0,10)).length;
   const done = TASKS.filter(t => t.status === "Done").length;
   const myReviews = TASKS.filter(t => t.reviewer === CURRENT_USER && t.review_status).length;
+  // "Open"/"Completed" just restate a status-grouped board's own group headers, and "My reviews"
+  // restates a review-grouped one — once you're pivoting on that dimension, the card is redundant
+  // with what's already on screen. Overdue/Due this week have no matching pivot, so always show.
+  const CARD_DIMENSION = {open:"status", completed:"status", myReviews:"review"};
   const metrics = [
     ["open","Open",open,"grid"], ["overdue","Overdue",overdue,"alert"], ["dueWeek","Due this week",dueWeek,"calendar"],
     ["completed","Completed",done,"check"], ["myReviews","My reviews",myReviews,"eye"],
-  ];
+  ].filter(([key]) => !groupLevels.includes(CARD_DIMENSION[key]));
   document.getElementById("summary").innerHTML = metrics.map(([key,label,val,iconName]) =>
     `<div class="metric m-${key} ${quickFilter===key?'active':''}" data-qf="${key}"><span class="metric-badge">${icon(iconName)}</span><div><b>${val}</b>${label}</div></div>`
   ).join("");
@@ -153,7 +176,9 @@ function applyFilters(list) {
   const t0 = today();
   const weekAgo = new Date(Date.now() - 7*86400000).toISOString();
   return list.filter(t => {
-    if (filters.owner && !filters.owner.has(t.owner)) return false;
+    // Matches collaborators too — filtering to Sparsh should also surface a task
+    // where he's a collaborator, not just tasks where he's the primary owner.
+    if (filters.owner && !filters.owner.has(t.owner) && !collaboratorList(t).some(c => filters.owner.has(c))) return false;
     if (filters.moduleBlank && t.module) return false;
     if (!filters.moduleBlank && filters.module && !filters.module.has(t.module || "(none)")) return false;
     if (filters.priority && !filters.priority.has(t.priority)) return false;
@@ -207,7 +232,12 @@ function renderChips() {
     else filters[key] = null;
     markFilterIcon(); renderBoard();
   });
-  document.getElementById("filters-btn").textContent = chips.length ? `Filters (${chips.length})` : "Filters";
+  // This button clears all active filters at once — the actual "open a filter" UI is the
+  // per-column filter icons in the table header. Only show it when there's something to clear,
+  // so its purpose ("Filters" alone) doesn't read as "open filters" (it doesn't do that).
+  const filtersBtn = document.getElementById("filters-btn");
+  filtersBtn.textContent = `Clear filters (${chips.length})`;
+  filtersBtn.style.display = chips.length ? "" : "none";
 }
 
 // ---------- Grouping ----------
@@ -221,8 +251,10 @@ function groupKey(t, mode) {
 }
 function groupFieldForViewBy() {
   // only module/owner map to a single writable field — week/status/review are
-  // derived or already have their own dedicated one-click controls.
-  return viewBy === "module" ? "module" : viewBy === "owner" ? "owner" : null;
+  // derived or already have their own dedicated one-click controls. Drag-to-reassign
+  // only ever targets the outermost pivot level, same as before this was generalized.
+  const dim = groupLevels[0];
+  return dim === "module" ? "module" : dim === "owner" ? "owner" : null;
 }
 function sortRowsWithinGroup(list) {
   let arr = list.slice();
@@ -233,8 +265,8 @@ function sortRowsWithinGroup(list) {
 
 // ---------- Header ----------
 function visibleColumns() {
-  // don't show a column that duplicates the current grouping — the group headers already say it
-  return columns.filter(c => c !== viewBy);
+  // don't show a column that duplicates any active pivot level — those group headers already say it
+  return columns.filter(c => !groupLevels.includes(c));
 }
 function colWidth(key) { return columnWidths[key] || ALL_COLUMNS[key].width; }
 
@@ -326,7 +358,11 @@ function renderCell(t, key) {
     const opts = ["", "Not started", "In progress", "Blocked"].map(o =>
       `<option value="${o}" ${o===val?"selected":""}>${o || "—"}</option>`
     ).join("");
-    return `<td class="cell-center"><select class="exec-select" data-exec-for="${t.id}" style="background-color:${c}22;color:${c};">${opts}</select></td>`;
+    const blocker = t.blocked_by_id ? taskById(t.blocked_by_id) : null;
+    const blockedIndicator = blocker
+      ? `<span class="blocked-indicator" title="Blocked by #${blocker.id}: ${esc(blocker.task)}">${icon("link")}</span>`
+      : "";
+    return `<td class="cell-center"><select class="exec-select" data-exec-for="${t.id}" style="background-color:${c}22;color:${c};">${opts}</select>${blockedIndicator}</td>`;
   }
   if (key === "review") return `<td class="cell-center">${renderReviewCell(t)}</td>`;
   if (key === "notes") {
@@ -343,6 +379,10 @@ function renderCell(t, key) {
     </div>${more}</td>`;
   }
   if (key === "updated_at") return `<td><span class="added-text" title="${esc(fmtDateTimeFull(t.updated_at))}">${fmtDateShort(t.updated_at.slice(0,10))}</span></td>`;
+  if (key.startsWith("custom:")) {
+    const val = (t.custom_fields||{})[key.slice(7)] || "";
+    return `<td class="editable-cell" data-field="${key}"><span class="added-text">${esc(val)}</span></td>`;
+  }
   return "<td></td>";
 }
 function renderReviewCell(t) {
@@ -368,45 +408,45 @@ function renderDataRow(t) {
   </tr>`;
 }
 
-function renderGroupedBoard(list) {
+// Recursive over groupLevels — depth 0 is the outermost pivot level (full chrome: dot,
+// progress bar, Sort/+Add task); depth 1+ are simpler indented subgroup rows, however many
+// levels deep the pivot goes. pathPrefix accumulates a "::"-joined key so collapse state and
+// nesting stay unique per branch, not just per raw group value (two different top-level groups
+// can each have their own "Open" subgroup without colliding).
+function renderGroupedBoard(list, levels = groupLevels, pathPrefix = "", depth = 0) {
+  if (!levels.length) return sortRowsWithinGroup(list).map(renderDataRow).join("");
+  const [dim, ...rest] = levels;
   const groups = {};
-  list.forEach(t => { const k = groupKey(t, viewBy); (groups[k] = groups[k] || []).push(t); });
+  list.forEach(t => { const k = groupKey(t, dim); (groups[k] = groups[k] || []).push(t); });
   let html = "";
-  Object.keys(groups).sort().forEach(g1key => {
-    const g1tasks = groups[g1key];
-    const open = g1tasks.filter(t=>t.status==="Open").length, done = g1tasks.filter(t=>t.status==="Done").length;
-    const reviewPending = g1tasks.filter(t=>t.review_status==="Review pending").length;
-    const overdueN = g1tasks.filter(isOverdue).length;
-    const collapsed = collapsedGroups.has(g1key);
-    let meta = `${open} open`;
-    if (done) meta += ` &middot; ${done} done`;
-    if (reviewPending) meta += ` &middot; ${reviewPending} review pending`;
-    if (overdueN) meta += ` &middot; ${overdueN} overdue`;
-    const accent = viewBy === "module" ? moduleColor(g1key === "(no use case)" ? "" : g1key) : "#C7C7CC";
-    const pct = g1tasks.length ? Math.round((done / g1tasks.length) * 100) : 0;
-    html += `<tr class="group-header" data-group="${esc(g1key)}"><td colspan="${visibleColumns().length+3}">
-      <span class="ghactions">
-        <span class="ghlink" data-sortgroup="${esc(g1key)}">Sort</span>
-        <span class="ghadd" data-addto="${esc(g1key)}">+ Add task</span>
-      </span>
-      ${collapsed?'&#9656;':'&#9662;'} <span class="gh-dot" style="background:${accent};"></span>${esc(g1key)} <span class="ghmeta">${meta}</span>
-      <div class="ghprogress"><div class="ghprogress-fill" style="width:${pct}%;background:${accent};"></div></div>
-    </td></tr>`;
-    if (activeGroupAddRows.has(g1key)) html += addRowHtml({groupKey: g1key});
-    if (collapsed) return;
-    if (thenBy !== "none") {
-      const subgroups = {};
-      g1tasks.forEach(t => { const k = groupKey(t, thenBy); (subgroups[k] = subgroups[k] || []).push(t); });
-      Object.keys(subgroups).sort().forEach(g2key => {
-        const g2tasks = sortRowsWithinGroup(subgroups[g2key]);
-        const subKey = g1key + "::" + g2key;
-        const subCollapsed = collapsedGroups.has(subKey);
-        html += `<tr class="subgroup-header" data-group="${esc(subKey)}"><td colspan="${visibleColumns().length+3}">${subCollapsed?'&#9656;':'&#9662;'} ${esc(g2key)} (${g2tasks.length})</td></tr>`;
-        if (!subCollapsed) html += g2tasks.map(renderDataRow).join("");
-      });
+  Object.keys(groups).sort().forEach(gkey => {
+    const gtasks = groups[gkey];
+    const fullKey = pathPrefix ? pathPrefix + "::" + gkey : gkey;
+    const collapsed = collapsedGroups.has(fullKey);
+    if (depth === 0) {
+      const open = gtasks.filter(t=>t.status==="Open").length, done = gtasks.filter(t=>t.status==="Done").length;
+      const reviewPending = gtasks.filter(t=>t.review_status==="Review pending").length;
+      const overdueN = gtasks.filter(isOverdue).length;
+      let meta = `${open} open`;
+      if (done) meta += ` &middot; ${done} done`;
+      if (reviewPending) meta += ` &middot; ${reviewPending} review pending`;
+      if (overdueN) meta += ` &middot; ${overdueN} overdue`;
+      const accent = dim === "module" ? moduleColor(gkey === "(no use case)" ? "" : gkey) : "#C7C7CC";
+      const pct = gtasks.length ? Math.round((done / gtasks.length) * 100) : 0;
+      html += `<tr class="group-header" data-group="${esc(fullKey)}"><td colspan="${visibleColumns().length+3}">
+        <span class="ghactions">
+          <span class="ghlink" data-sortgroup="${esc(fullKey)}">Sort</span>
+          <span class="ghadd" data-addto="${esc(fullKey)}">+ Add task</span>
+        </span>
+        ${collapsed?'&#9656;':'&#9662;'} <span class="gh-dot" style="background:${accent};"></span>${esc(gkey)} <span class="ghmeta">${meta}</span>
+        <div class="ghprogress"><div class="ghprogress-fill" style="width:${pct}%;background:${accent};"></div></div>
+      </td></tr>`;
+      if (activeGroupAddRows.has(fullKey)) html += addRowHtml({groupKey: fullKey});
     } else {
-      html += sortRowsWithinGroup(g1tasks).map(renderDataRow).join("");
+      const indent = 20 + (depth - 1) * 16;
+      html += `<tr class="subgroup-header" data-group="${esc(fullKey)}"><td colspan="${visibleColumns().length+3}" style="padding-left:${indent}px;">${collapsed?'&#9656;':'&#9662;'} ${esc(gkey)} (${gtasks.length})</td></tr>`;
     }
+    if (!collapsed) html += renderGroupedBoard(gtasks, rest, fullKey, depth + 1);
   });
   return html;
 }
@@ -416,13 +456,8 @@ function renderBoard() {
   renderChips();
   let list = applyFilters(TASKS);
   const tbody = document.getElementById("task-rows");
-  let bodyHtml;
-  if (viewBy === "flat") {
-    bodyHtml = (activeGroupAddRows.has("__top__") ? "" : "") + sortRowsWithinGroup(list).map(renderDataRow).join("");
-  } else {
-    bodyHtml = renderGroupedBoard(list);
-  }
-  tbody.innerHTML = addRowHtml({groupKey: null}) + bodyHtml;
+  // renderGroupedBoard already collapses to a flat sorted list when groupLevels is empty
+  tbody.innerHTML = addRowHtml({groupKey: null}) + renderGroupedBoard(list);
   attachRowHandlers();
   attachAddRowHandlers();
   attachGroupHandlers();
@@ -462,11 +497,13 @@ function attachGroupHandlers() {
 }
 
 function contextDefaultsForGroup(g1key) {
+  // "+Add task" only appears at the outermost pivot level, so only groupLevels[0] is relevant here.
+  const dim = groupLevels[0];
   const d = { owner: "", module: "", track: "Discovery", due: tomorrow() };
-  if (viewBy === "module") d.module = g1key === "(no use case)" ? "" : g1key;
-  else if (viewBy === "owner") d.owner = g1key;
-  else if (viewBy === "review") d.owner = "";
-  else if (viewBy === "week") { /* due prefilled to a date within that week */ }
+  if (dim === "module") d.module = g1key === "(no use case)" ? "" : g1key;
+  else if (dim === "owner") d.owner = g1key;
+  else if (dim === "review") d.owner = "";
+  else if (dim === "week") { /* due prefilled to a date within that week */ }
   return d;
 }
 function openGroupAddRow(g1key) {
@@ -693,14 +730,34 @@ function autoGrow(el) { el.style.height = "auto"; el.style.height = Math.min(el.
 
 function attachNotesInline(el) {
   const id = parseInt(el.dataset.notesFor);
-  // If this field is showing exactly one note that's yours, editing it in place should PATCH
-  // that note, not silently create a second one — that's the "edit" affordance for the common
-  // case; anything more ambiguous (multiple notes, or someone else's) goes through the panel.
+  // If this field is showing a note that's yours, editing it in place PATCHes that note
+  // rather than creating a second one. Clearing it to empty and committing DELETEs it —
+  // that's the explicit "remove this note" gesture, not a no-op.
   const editingNoteId = el.dataset.editingNoteId;
   const isEditing = !!editingNoteId;
   const submit = (text) => isEditing
     ? fetch(`/api/notes/${editingNoteId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text})})
     : fetch(`/api/tasks/${id}/notes`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text})});
+  const commit = async () => {
+    const text = el.value.trim();
+    const preview = el.dataset.preview || "";
+    if (!text && isEditing && preview) {
+      await fetch(`/api/notes/${editingNoteId}?author=${encodeURIComponent(CURRENT_USER)}`, {method:"DELETE"});
+      NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
+      showToast("Note deleted");
+      el.dataset.preview = ""; el.dataset.editingNoteId = "";
+      return true;
+    }
+    if (text && text !== (isEditing ? preview : null)) {
+      await submit(text);
+      NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
+      el.dataset.preview = text;
+      el.value = text;
+      showToast(isEditing ? "Note updated" : "Note added");
+      return true;
+    }
+    return false;
+  };
 
   el.addEventListener("click", (e) => e.stopPropagation());
   el.addEventListener("focus", () => {
@@ -713,25 +770,12 @@ function attachNotesInline(el) {
   el.addEventListener("keydown", async (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (el.value.trim() && el.value.trim() !== (isEditing ? el.dataset.preview : null)) {
-        const text = el.value.trim();
-        await submit(text);
-        NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
-        // show what was just written instead of clearing to blank — blur() below
-        // won't re-submit since value now matches the (updated) preview it compares against.
-        el.dataset.preview = text;
-        el.value = text;
-        showToast(isEditing ? "Note updated" : "Note added");
-        el.blur();
-      }
+      if (await commit()) el.blur();
     }
     if (e.key === "Escape") { el.value = el.dataset.preview || ""; el.blur(); }
   });
   el.addEventListener("blur", async () => {
-    if (el.value.trim() && el.value.trim() !== (el.dataset.preview || "")) {
-      await submit(el.value.trim());
-      NOTE_COUNTS = await (await fetch("/api/note_counts")).json();
-    }
+    await commit();
     el.rows = 1;
     el.style.height = "";
     renderBoard();
@@ -783,6 +827,7 @@ function startEdit(td, id) {
     ["Normal","High"].forEach(p => { const o=document.createElement("option"); o.value=p; o.textContent=p; if (p===t.priority) o.selected=true; input.appendChild(o); });
   } else if (field === "module") { input = document.createElement("input"); input.value = t.module || ""; }
   else if (field === "task") { input = document.createElement("input"); input.value = t.task; }
+  else if (field.startsWith("custom:")) { input = document.createElement("input"); input.value = (t.custom_fields||{})[field.slice(7)] || ""; }
   else { input = document.createElement("input"); input.value = t[field] || ""; }
 
   const original = td.innerHTML;
@@ -793,7 +838,8 @@ function startEdit(td, id) {
   const commit = async () => {
     if (done) return; done = true;
     const val = input.value;
-    try { await patchTask(id, {[field]: val}); renderBoard(); const flash = showToast("Saved"); setTimeout(flash, 1000); }
+    const patch = field.startsWith("custom:") ? { custom_fields: { [field.slice(7)]: val } } : { [field]: val };
+    try { await patchTask(id, patch); renderBoard(); const flash = showToast("Saved"); setTimeout(flash, 1000); }
     catch (err) { renderBoard(); }
   };
   const cancel = () => { if (!done) { done = true; td.innerHTML = original; } };
@@ -818,6 +864,7 @@ function openRowMenu(anchor, id) {
     <div class="pop-item" data-act="review">Mark for review</div>
     <div class="pop-item" data-act="move">Move to another use case</div>
     <div class="pop-item" data-act="collab">Edit collaborators</div>
+    <div class="pop-item" data-act="blocked">${t.blocked_by_id ? "Change blocked-by" : "Mark as blocked by…"}</div>
     <div class="pop-item" data-act="link">Copy task link</div>
     <hr>
     <div class="pop-item danger" data-act="delete">Delete</div>
@@ -857,6 +904,21 @@ function openRowMenu(anchor, id) {
     pop.innerHTML = `<label>Collaborators (comma-separated, in addition to owner ${esc(t.owner)})</label><input class="collab-input" list="owner-list" value="${esc(t.collaborators||'')}" placeholder="e.g. Abhishek, Hriday"><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Save</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
     pop.querySelector('[data-act="go"]').onclick = async () => { await patchTask(id, {collaborators: pop.querySelector(".collab-input").value}); closePopovers(); renderBoard(); showToast("Collaborators updated"); };
+  };
+  pop.querySelector('[data-act="blocked"]').onclick = (e) => {
+    e.stopPropagation();
+    const others = TASKS.filter(x => x.id !== id && x.status === "Open");
+    const opts = `<option value="">(none)</option>` + others.map(x =>
+      `<option value="${x.id}" ${x.id===t.blocked_by_id?"selected":""}>#${x.id} ${esc(x.task.slice(0,40))}</option>`
+    ).join("");
+    pop.innerHTML = `<label>Blocked by</label><select class="blocked-by-select">${opts}</select><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Save</button></div>`;
+    pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
+    pop.querySelector('[data-act="go"]').onclick = async () => {
+      const val = pop.querySelector(".blocked-by-select").value;
+      if (val) await patchTask(id, { blocked_by_id: parseInt(val) });
+      else await patchTask(id, { clear_blocked_by: true });
+      closePopovers(); renderBoard(); showToast(val ? "Blocked-by set" : "Blocked-by cleared");
+    };
   };
   pop.querySelector('[data-act="link"]').onclick = () => {
     const link = `${location.origin}/#task-${id}`;
@@ -907,6 +969,7 @@ async function openTaskNotesPanel(id, opts) {
   const panel = document.getElementById("notes-panel");
   panel.style.display = "flex";
   document.querySelector("main").style.marginRight = "320px";
+  if (opts && opts.focusAdd) notesPanelTab = "notes";
   await refreshNotesPanel();
   if (opts && opts.focusAdd) panel.querySelector(".note-input")?.focus();
 }
@@ -915,13 +978,31 @@ function closeNotesPanel() {
   document.getElementById("notes-panel").style.display = "none";
   document.querySelector("main").style.marginRight = "0";
 }
+const FIELD_LABELS = {
+  track: "Track", module: "Use case", owner: "Owner", collaborators: "Collaborators",
+  task: "Task", due: "Due date", priority: "Priority", status: "Status",
+  execution_state: "Execution", review_status: "Review status", reviewer: "Reviewer",
+  review_type: "Review type", review_due: "Review due", review_comment: "Review comment",
+  blocked_by_id: "Blocked by", custom_fields: "Custom fields",
+};
+function fmtHistoryValue(field, val, tasksById) {
+  if (val === null || val === "None" || val === "") return "(none)";
+  if (field === "blocked_by_id") return tasksById[val] ? `#${val} ${tasksById[val]}` : `#${val}`;
+  return val;
+}
+let notesPanelTab = "notes";
+
 async function refreshNotesPanel() {
   if (notesPanelTaskId === null) return;
   const id = notesPanelTaskId;
   const t = taskById(id);
   const panel = document.getElementById("notes-panel");
   if (!t) { closeNotesPanel(); return; }
-  const notes = await (await fetch(`/api/tasks/${id}/notes`)).json();
+  const [notes, history] = await Promise.all([
+    (await fetch(`/api/tasks/${id}/notes`)).json(),
+    (await fetch(`/api/tasks/${id}/history`)).json(),
+  ]);
+  const tasksById = Object.fromEntries(TASKS.map(x => [x.id, x.task]));
   panel.innerHTML = `
     <div class="np-header">
       <div>
@@ -930,7 +1011,11 @@ async function refreshNotesPanel() {
       </div>
       <span class="np-close" id="np-close">&times;</span>
     </div>
-    <div class="note-list">${notes.length ? notes.map(n => `
+    <div class="np-tabs">
+      <span class="np-tab ${notesPanelTab==='notes'?'active':''}" data-tab="notes">Notes</span>
+      <span class="np-tab ${notesPanelTab==='history'?'active':''}" data-tab="history">Activity${history.length?` (${history.length})`:''}</span>
+    </div>
+    <div class="note-list" style="${notesPanelTab==='notes'?'':'display:none;'}">${notes.length ? notes.map(n => `
       <div class="note-item" data-note-id="${n.id}">
         <div class="meta"><span>${esc(n.author)} ${n.pinned?'&#128204;':''}</span><span>${fmtDateShort(n.created_at.slice(0,10))}</span></div>
         <div class="note-text">${esc(n.text)}</div>
@@ -940,8 +1025,16 @@ async function refreshNotesPanel() {
           ${n.author===CURRENT_USER?'<span data-act="del">Delete</span>':''}
         </div>
       </div>`).join("") : `<div class="added-text">No notes yet — add the first one below.</div>`}</div>
-    <input class="note-input" placeholder="Add a note... (Enter to add)">`;
+    <div class="history-list" style="${notesPanelTab==='history'?'':'display:none;'}">${history.length ? history.map(h => `
+      <div class="history-item">
+        <div>&#8226; <b>${esc(h.changed_by)}</b> changed <b>${esc(FIELD_LABELS[h.field]||h.field)}</b> from
+          <span class="hv">${esc(fmtHistoryValue(h.field, h.old_value, tasksById))}</span> to
+          <span class="hv">${esc(fmtHistoryValue(h.field, h.new_value, tasksById))}</span></div>
+        <div class="added-text">${esc(fmtDateTimeFull(h.changed_at))}</div>
+      </div>`).join("") : `<div class="added-text">No changes logged yet.</div>`}</div>
+    <input class="note-input" placeholder="Add a note... (Enter to add)" style="${notesPanelTab==='notes'?'':'display:none;'}">`;
   panel.querySelector("#np-close").onclick = closeNotesPanel;
+  panel.querySelectorAll(".np-tab").forEach(el => el.onclick = () => { notesPanelTab = el.dataset.tab; refreshNotesPanel(); });
   panel.querySelectorAll('[data-act="edit"]').forEach(el => el.onclick = () => {
     const item = el.closest(".note-item");
     const noteId = item.dataset.noteId;
@@ -953,8 +1046,13 @@ async function refreshNotesPanel() {
     ta.focus(); ta.select();
     item.querySelector('[data-act="cancel-edit"]').onclick = refreshNotesPanel;
     item.querySelector('[data-act="save-edit"]').onclick = async () => {
-      if (!ta.value.trim()) return;
-      await fetch(`/api/notes/${noteId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text: ta.value.trim()})});
+      // Clearing the text and saving deletes the note — an explicit "remove this" gesture,
+      // not a blocked no-op.
+      if (ta.value.trim()) {
+        await fetch(`/api/notes/${noteId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({author: CURRENT_USER, text: ta.value.trim()})});
+      } else {
+        await fetch(`/api/notes/${noteId}?author=${encodeURIComponent(CURRENT_USER)}`, {method:"DELETE"});
+      }
       await refreshNotesPanel(); loadTasks();
     };
   });
@@ -1111,11 +1209,104 @@ function openColumnsManager(anchorEl) {
   };
 }
 
-// ---------- View settings popover (Columns / Density / Hide completed / Save view — consolidated
-// out of the toolbar so the primary actions there (search, group-by, filters, add task) aren't
-// crowded out by low-frequency ones) ----------
+// ---------- Activity bell — "what changed since I last looked," built on the audit trail.
+// There's no per-person login in this dashboard (single active user), so this isn't a
+// per-assignee notification inbox — it's a catch-up feed anchored to a locally-stored
+// last-seen timestamp, which is exactly what a single returning user actually needs. ----------
+function lastSeenActivity() { return localStorage.getItem("pmo_last_seen_activity") || "1970-01-01T00:00:00"; }
+async function refreshActivityDot() {
+  const recent = await (await fetch(`/api/history?since=${encodeURIComponent(lastSeenActivity())}`)).json();
+  document.getElementById("activity-dot").style.display = recent.length ? "block" : "none";
+}
+function renderHistoryEntries(entries) {
+  const tasksById = Object.fromEntries(TASKS.map(x => [x.id, x.task]));
+  return entries.length ? entries.map(h => `
+    <div class="history-item">
+      <div>&#8226; <b>${esc(h.changed_by)}</b> changed <b>${esc(FIELD_LABELS[h.field]||h.field)}</b> on &ldquo;${esc(h.task_title)}&rdquo;</div>
+      <div class="added-text">${esc(fmtHistoryValue(h.field, h.old_value, tasksById))} &rarr; ${esc(fmtHistoryValue(h.field, h.new_value, tasksById))} &middot; ${esc(fmtDateTimeFull(h.changed_at))}</div>
+    </div>`).join("") : `<div class="added-text">No activity.</div>`;
+}
+function openHistoryPopover(anchorEl, html) {
+  closePopovers();
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.style.minWidth = "300px";
+  pop.style.maxWidth = "360px";
+  pop.style.maxHeight = "360px";
+  pop.style.overflowY = "auto";
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  const r = anchorEl.getBoundingClientRect();
+  // Flip above the anchor when there's not enough room below (common for sidebar items
+  // near the bottom of the viewport, e.g. the last few activity-day cells).
+  const estHeight = Math.min(360, pop.scrollHeight || 200);
+  const openAbove = r.bottom + 6 + estHeight > window.innerHeight && r.top > estHeight;
+  pop.style.top = openAbove
+    ? (r.top + window.scrollY - estHeight - 6) + "px"
+    : (r.bottom + window.scrollY + 6) + "px";
+  pop.style.left = Math.max(8, Math.min(r.left + window.scrollX, window.innerWidth - 376)) + "px";
+}
+document.getElementById("activity-btn").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const btnEl = e.currentTarget; // capture before the await — event fields go null once dispatch finishes
+  const entries = await (await fetch("/api/history")).json();
+  openHistoryPopover(btnEl, renderHistoryEntries(entries));
+  localStorage.setItem("pmo_last_seen_activity", new Date().toISOString());
+  document.getElementById("activity-dot").style.display = "none";
+});
+
+// ---------- Sidebar activity browser — last 15 calendar days as a compact grid (day-number
+// cells, not 15 stacked rows) so it doesn't dominate the sidebar. Click a day to see what
+// changed then, via the same underlying audit trail as the bell. ----------
+function renderActivityDayList() {
+  const el = document.getElementById("sidebar-activity-days");
+  const days = [];
+  for (let i = 0; i < 15; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const iso = d.toISOString().slice(0,10);
+    const title = i === 0 ? "Today" : i === 1 ? "Yesterday" : fmtDateShort(iso);
+    days.push({iso, dayNum: d.getDate(), title, isToday: i === 0});
+  }
+  el.innerHTML = `<div class="activity-day-grid">${days.map(d =>
+    `<button class="activity-day-cell${d.isToday ? ' today' : ''}" data-day="${d.iso}" title="${esc(d.title)}">${d.dayNum}</button>`
+  ).join("")}</div>`;
+  el.querySelectorAll("[data-day]").forEach(item => item.addEventListener("click", async () => {
+    // Use `item` (the forEach-closure element), not e.currentTarget — that goes null once
+    // the event dispatch completes, which happens before this async handler's await resolves.
+    const iso = item.dataset.day;
+    const since = iso + "T00:00:00+05:30";
+    const until = iso + "T23:59:59+05:30";
+    const entries = await (await fetch(`/api/history?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`)).json();
+    openHistoryPopover(item, renderHistoryEntries(entries));
+    if (window.innerWidth < 700) closeSidebar();
+  }));
+}
+renderActivityDayList();
+
+// ---------- Mobile sidebar toggle — off-canvas overlay below the 700px breakpoint, see the
+// matching @media block in dashboard.css. Closing on scrim-click or after picking a nav/group-by
+// item (so you actually see the board you just switched to, not the still-open sidebar). ----------
+function closeSidebar() {
+  document.getElementById("sidebar").classList.remove("open");
+  document.getElementById("sidebar-scrim").classList.remove("open");
+}
+document.getElementById("sidebar-toggle-btn").addEventListener("click", () => {
+  document.getElementById("sidebar").classList.toggle("open");
+  document.getElementById("sidebar-scrim").classList.toggle("open");
+});
+document.getElementById("sidebar-scrim").addEventListener("click", closeSidebar);
+document.getElementById("sidebar").addEventListener("click", (e) => {
+  // Reorder/remove clicks within an already-active level shouldn't snap the sidebar shut —
+  // only closing when a nav view or a new group-by dimension is actually picked.
+  if (e.target.closest(".nav-item")) { closeSidebar(); return; }
+  if (e.target.closest(".groupby-item") && !e.target.closest(".groupby-controls")) closeSidebar();
+});
+
+// ---------- View settings popover (Columns / Density / Hide completed / Save view) — lives in
+// the sidebar now, not the toolbar, matching where display/config options usually sit. ----------
 document.getElementById("settings-btn").addEventListener("click", (e) => {
   e.stopPropagation();
+  if (window.innerWidth < 700) closeSidebar(); // its own stopPropagation skips the sidebar's delegated close-on-nav-item-click
   closePopovers();
   const pop = document.createElement("div");
   pop.className = "popover";
@@ -1123,12 +1314,16 @@ document.getElementById("settings-btn").addEventListener("click", (e) => {
     <div class="pop-item" data-act="columns">Columns…</div>
     <div class="pop-item" data-act="density">Density: ${density === "compact" ? "Compact" : "Comfortable"}</div>
     <div class="pop-item" data-act="hide-completed">${hideCompleted ? "&#9745;" : "&#9744;"} Hide completed</div>
+    <div class="pop-item" data-act="custom-field">Add custom field…</div>
     <hr>
     <div class="pop-item" data-act="save-view">Save current view…</div>
   `;
   document.body.appendChild(pop);
   const r = e.currentTarget.getBoundingClientRect();
-  pop.style.top = (r.bottom + window.scrollY) + "px"; pop.style.left = (r.left - 150 + window.scrollX) + "px";
+  // Anchored in the sidebar now, not a right-aligned toolbar button — open to its right,
+  // into the main content area, instead of the old left-of-button offset (which would push
+  // this off the left edge of the screen from a sidebar position).
+  pop.style.top = (r.top + window.scrollY) + "px"; pop.style.left = (r.right + 8 + window.scrollX) + "px";
 
   pop.querySelector('[data-act="columns"]').onclick = () => openColumnsManager(e.currentTarget);
   pop.querySelector('[data-act="density"]').onclick = () => {
@@ -1145,27 +1340,96 @@ document.getElementById("settings-btn").addEventListener("click", (e) => {
     const name = window.prompt("Name this view:");
     if (!name) return;
     const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}");
-    saved[name] = { viewBy, thenBy, filters, quickFilter, sortCol, sortDir, hideCompleted, density, columns };
+    saved[name] = { groupLevels: groupLevels.slice(), filters, quickFilter, sortCol, sortDir, hideCompleted, density, columns };
     localStorage.setItem("pmo_saved_views", JSON.stringify(saved));
     currentViewKey = "c:" + name;
     renderSidebarNav();
     showToast(`Saved view "${name}"`);
   };
+  pop.querySelector('[data-act="custom-field"]').onclick = () => {
+    closePopovers();
+    const name = window.prompt("Custom field name (e.g. Risk, Effort estimate):");
+    if (!name || !name.trim()) return;
+    const key = "custom:" + name.trim();
+    if (ALL_COLUMNS[key]) { showToast(`"${name.trim()}" already exists`); return; }
+    const names = loadCustomFieldNames();
+    names.push(name.trim());
+    localStorage.setItem("pmo_custom_fields", JSON.stringify(names));
+    registerCustomField(name.trim());
+    columns.push(key);
+    saveColumnsForView();
+    buildHeader(); renderBoard();
+    showToast(`Added custom field "${name.trim()}"`);
+  };
 });
 
-// ---------- Saved views (left sidebar nav) ----------
+// ---------- Saved views (left sidebar nav) — perspectives that combine a filter/sort/quickFilter,
+// not just a grouping dimension (that's what the separate "Group by" section below is for; a
+// view here that only set groupLevels would be a pure duplicate of a Group-by pill). ----------
 const BUILTIN_VIEWS = {
-  "All tasks": { icon:"grid", viewBy:"flat", thenBy:"none", filters:{owner:null,module:null,priority:null,due:"all",status:"all",moduleBlank:false}, quickFilter:null },
-  "By use case": { icon:"layers", viewBy:"module", thenBy:"none" },
-  "By owner": { icon:"user", viewBy:"owner", thenBy:"none" },
-  "My tasks": { icon:"star", viewBy:"flat", thenBy:"none", quickFilter:"myTasks" },
-  "My reviews": { icon:"eye", viewBy:"review", thenBy:"none", quickFilter:"myReviews" },
-  "Overdue": { icon:"alert", viewBy:"flat", thenBy:"none", quickFilter:"overdue" },
-  "Due this week": { icon:"calendar", viewBy:"flat", thenBy:"none", quickFilter:"dueWeek" },
-  "Recently added": { icon:"plusCircle", viewBy:"flat", thenBy:"none", sortCol:"added", sortDir:-1 },
-  "Completed": { icon:"check", viewBy:"flat", thenBy:"none", quickFilter:"completed", hideCompleted:false },
+  "All tasks": { icon:"grid", groupLevels:[], filters:{owner:null,module:null,priority:null,due:"all",status:"all",moduleBlank:false}, quickFilter:null },
+  "My tasks": { icon:"star", groupLevels:[], quickFilter:"myTasks" },
+  "My reviews": { icon:"eye", groupLevels:["review"], quickFilter:"myReviews" },
+  "Overdue": { icon:"alert", groupLevels:[], quickFilter:"overdue" },
+  "Due this week": { icon:"calendar", groupLevels:[], quickFilter:"dueWeek" },
+  "Recently added": { icon:"plusCircle", groupLevels:[], sortCol:"added", sortDir:-1 },
+  "Completed": { icon:"check", groupLevels:[], quickFilter:"completed", hideCompleted:false },
 };
-let currentViewKey = "b:By use case";
+// No Views item matches the initial state exactly (grouped by module, but not the flattened
+// "All tasks" reset) — that's fine, the Group-by pill for "Use case" shows as active instead.
+let currentViewKey = "";
+
+// ---------- Pivot builder (sidebar) — an ordered stack of grouping levels rather than a
+// single "group by / then by" pair, so you can nest e.g. Use case > Owner > Status. ----------
+function setGroupLevels(next) {
+  groupLevels = next;
+  columns = loadColumnsForView(groupLevels[0] || "flat");
+  renderAll();
+  renderGroupBySidebar();
+}
+function renderGroupBySidebar() {
+  const el = document.getElementById("sidebar-groupby");
+  if (!el) return;
+  el.innerHTML = GROUP_DIMENSIONS.map(d => {
+    const idx = groupLevels.indexOf(d.key);
+    const active = idx !== -1;
+    const controls = active ? `<span class="groupby-controls">
+        ${idx>0 ? `<span class="groupby-move" data-dir="up" data-dim="${d.key}" title="Move up">&#8593;</span>` : ""}
+        ${idx<groupLevels.length-1 ? `<span class="groupby-move" data-dir="down" data-dim="${d.key}" title="Move down">&#8595;</span>` : ""}
+        <span class="groupby-remove" data-dim="${d.key}" title="Remove">&times;</span>
+      </span>` : "";
+    return `<div class="groupby-item ${active?'active':''}" data-dim="${d.key}">
+      <span class="groupby-order">${active ? idx+1 : ''}</span>
+      <span class="groupby-label">${esc(d.label)}</span>
+      ${controls}
+    </div>`;
+  }).join("");
+  el.querySelectorAll(".groupby-item").forEach(item => {
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".groupby-controls")) return;
+      const dim = item.dataset.dim;
+      if (!groupLevels.includes(dim)) setGroupLevels([...groupLevels, dim]);
+    });
+  });
+  el.querySelectorAll(".groupby-move").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const i = groupLevels.indexOf(btn.dataset.dim);
+      const j = btn.dataset.dir === "up" ? i - 1 : i + 1;
+      if (j < 0 || j >= groupLevels.length) return;
+      const next = groupLevels.slice();
+      [next[i], next[j]] = [next[j], next[i]];
+      setGroupLevels(next);
+    });
+  });
+  el.querySelectorAll(".groupby-remove").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setGroupLevels(groupLevels.filter(d => d !== btn.dataset.dim));
+    });
+  });
+}
+
 function renderSidebarNav() {
   const saved = JSON.parse(localStorage.getItem("pmo_saved_views") || "{}");
   const nav = document.getElementById("sidebar-nav");
@@ -1189,22 +1453,21 @@ function renderSidebarNav() {
   });
 }
 function applyViewConfig(cfg) {
-  viewBy = cfg.viewBy ?? "flat"; thenBy = cfg.thenBy ?? "none";
+  // Accept the new groupLevels array, or fall back to an old saved view's viewBy/thenBy pair.
+  groupLevels = cfg.groupLevels ? cfg.groupLevels.slice()
+    : [cfg.viewBy, cfg.thenBy].filter(v => v && v !== "flat" && v !== "none");
   filters = cfg.filters ?? { owner: null, module: null, priority: null, due: "all", status: "all", moduleBlank: false };
   quickFilter = cfg.quickFilter ?? null;
   sortCol = cfg.sortCol ?? null; sortDir = cfg.sortDir ?? 1;
   hideCompleted = cfg.hideCompleted ?? false;
   density = cfg.density ?? density;
-  columns = cfg.columns ?? loadColumnsForView(viewBy);
-  document.getElementById("view-by").value = viewBy;
-  document.getElementById("then-by").value = thenBy;
+  columns = cfg.columns ?? loadColumnsForView(groupLevels[0] || "flat");
   renderAll();
+  renderGroupBySidebar();
 }
 
 // ---------- Toolbar wiring ----------
 document.getElementById("f-search").addEventListener("input", (e) => { searchQ = e.target.value.toLowerCase(); renderBoard(); });
-document.getElementById("view-by").addEventListener("change", (e) => { viewBy = e.target.value; columns = loadColumnsForView(viewBy); renderAll(); });
-document.getElementById("then-by").addEventListener("change", (e) => { thenBy = e.target.value; renderBoard(); });
 document.getElementById("filters-btn").addEventListener("click", () => {
   filters = { owner: null, module: null, priority: null, due: "all", status: "all", moduleBlank: false };
   markFilterIcon(); renderBoard();
@@ -1214,8 +1477,9 @@ document.getElementById("expand-all-btn").addEventListener("click", () => {
   renderBoard();
 });
 document.getElementById("collapse-all-btn").addEventListener("click", () => {
+  if (!groupLevels.length) return; // nothing to collapse in a flat list
   const grouped = applyFilters(TASKS);
-  grouped.forEach(t => collapsedGroups.add(groupKey(t, viewBy)));
+  grouped.forEach(t => collapsedGroups.add(groupKey(t, groupLevels[0])));
   renderBoard();
 });
 document.getElementById("add-btn").addEventListener("click", () => {
@@ -1240,13 +1504,83 @@ document.getElementById("bulk-due-apply").onclick = async () => {
 };
 document.getElementById("bulk-clear").onclick = () => { selected.clear(); renderBulkbar(); renderBoard(); };
 
+const TAB_VIEWS = { board: "board-view", capture: "capture-view", project: "project-view", gantt: "gantt-view" };
+let projectContextLoaded = false;
 document.querySelectorAll(".tab").forEach(tab => {
   tab.onclick = () => {
     document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
     tab.classList.add("active");
-    document.getElementById("board-view").style.display = tab.dataset.tab === "board" ? "block" : "none";
-    document.getElementById("gantt-view").style.display = tab.dataset.tab === "gantt" ? "block" : "none";
+    Object.entries(TAB_VIEWS).forEach(([name, id]) => {
+      document.getElementById(id).style.display = tab.dataset.tab === name ? "block" : "none";
+    });
+    if (tab.dataset.tab === "project" && !projectContextLoaded) loadProjectContext();
   };
+});
+
+// ---------- Project tab — the team/workstream/default-ownership doc the parser reads. ----------
+async function loadProjectContext() {
+  const input = document.getElementById("project-context-input");
+  try {
+    const r = await fetch("/api/project-context");
+    const data = await r.json();
+    input.value = data.content || "";
+    projectContextLoaded = true;
+  } catch (err) {
+    input.placeholder = "Failed to load: " + err.message;
+  }
+}
+document.getElementById("project-context-save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("project-context-save-btn");
+  const statusEl = document.getElementById("project-context-status");
+  const content = document.getElementById("project-context-input").value;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await fetch("/api/project-context", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({content})});
+    statusEl.textContent = "Saved.";
+    showToast("Project context saved");
+  } catch (err) {
+    statusEl.textContent = "Failed to save: " + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "Save";
+    setTimeout(() => { statusEl.textContent = ""; }, 3000);
+  }
+});
+
+// ---------- Capture tab — the paste-to-parse trick already used in the add-row's task
+// input, but as a proper dedicated surface with room for a whole pasted email/meeting-notes
+// blob and a visible list of what it actually did, instead of a cramped one-line textbox. ----------
+document.getElementById("capture-parse-btn").addEventListener("click", async () => {
+  const input = document.getElementById("capture-input");
+  const resultsEl = document.getElementById("capture-results");
+  const text = input.value.trim();
+  if (!text) return;
+  const btn = document.getElementById("capture-parse-btn");
+  btn.disabled = true; btn.textContent = "Parsing…";
+  try {
+    const r = await fetch("/api/parse", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({text, defaults:{}})});
+    const data = await r.json();
+    if (data.error) {
+      resultsEl.innerHTML = `<div class="capture-result-item failed">Parse failed: ${esc(data.error)}</div>`;
+    } else {
+      resultsEl.innerHTML = (data.changes || []).map(c => {
+        const cls = c.startsWith("FAILED") ? "failed" : c.startsWith("SKIPPED") ? "skipped" : "";
+        return `<div class="capture-result-item ${cls}">${esc(c)}</div>`;
+      }).join("") || `<div class="capture-result-item skipped">Nothing recognized in that text.</div>`;
+      if (data.results && data.results.length) {
+        input.value = "";
+        await loadTasks();
+        showToast(`Applied ${data.results.length} change(s) to the board`);
+      }
+    }
+  } catch (err) {
+    resultsEl.innerHTML = `<div class="capture-result-item failed">Request failed: ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "Parse & Apply";
+  }
+});
+document.getElementById("capture-clear-btn").addEventListener("click", () => {
+  document.getElementById("capture-input").value = "";
+  document.getElementById("capture-results").innerHTML = "";
 });
 
 // ---------- Keyboard shortcuts ----------
@@ -1275,6 +1609,9 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-document.getElementById("settings-btn").innerHTML = icon("sliders");
+document.getElementById("settings-btn").innerHTML = icon("sliders") + " Settings";
+document.getElementById("activity-btn").innerHTML = icon("bell") + document.getElementById("activity-btn").innerHTML;
+document.getElementById("sidebar-export-link").innerHTML = icon("download") + "Export Excel";
 renderSidebarNav();
-loadMeta().then(loadTasks);
+renderGroupBySidebar();
+loadMeta().then(loadTasks).then(refreshActivityDot);

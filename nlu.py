@@ -17,9 +17,11 @@ from db import PRIORITIES, TRACKS, TaskStore
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+PROJECT_CONTEXT_PATH = PROJECT_ROOT / "PROJECT_CONTEXT.md"
+
 MODEL = "claude-sonnet-5"
 
-SYSTEM_PROMPT = f"""You turn a raw PMO status note into structured tracker actions.
+BASE_SYSTEM_PROMPT = f"""You turn a raw PMO status note into structured tracker actions.
 
 Tracks: {", ".join(TRACKS)}. Priorities: {", ".join(PRIORITIES)}.
 Modules are free text use-cases, typically one of: Account Prioritization,
@@ -57,6 +59,12 @@ For each distinct action item in the note:
   context from where the note was entered), use them for any action item
   that doesn't clearly state its own owner/use-case — don't leave a task
   under those defaults orphaned just because a line didn't repeat them.
+- If a note doesn't name anyone for an item, and the project context below
+  defines a default owner for that kind of work (e.g. "testing tasks
+  default to X"), use that default rather than leaving owner blank. This is
+  distinct from inventing an owner from an incidentally-mentioned name —
+  it's applying an established team convention, and only applies when no
+  name is stated at all.
 
 Respond with ONLY valid JSON, no prose, no markdown fences:
 {{"actions": [{{"type": "add"|"update", ...fields..., "id": <int, only for update>}}],
@@ -73,17 +81,31 @@ def get_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-def call_claude(client, note_text: str, open_tasks: list[dict], defaults: dict | None = None) -> dict:
+def get_project_context(store: TaskStore) -> str:
+    """DB value (if the doc's ever been edited from the dashboard) wins;
+    otherwise seed from the committed file — see PROJECT_CONTEXT.md."""
+    saved = store.get_setting("project_context")
+    if saved is not None:
+        return saved
+    return PROJECT_CONTEXT_PATH.read_text(encoding="utf-8") if PROJECT_CONTEXT_PATH.exists() else ""
+
+
+def call_claude(
+    client, note_text: str, open_tasks: list[dict], defaults: dict | None = None, project_context: str = "",
+) -> dict:
     context = f"Default field values for this note, if not otherwise stated: {json.dumps(defaults)}\n\n" if defaults else ""
     user_content = (
         f"Current open tasks:\n{json.dumps(open_tasks, indent=2)}\n\n"
         f"{context}Raw note:\n{note_text}"
     )
+    system = BASE_SYSTEM_PROMPT
+    if project_context:
+        system += f"\n\nProject context (team, roles, default-ownership rules):\n{project_context}"
     resp = client.messages.create(
         model=MODEL,
         max_tokens=4000,
         thinking={"type": "disabled"},
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": user_content}],
     )
     text_block = next((b for b in resp.content if getattr(b, "type", None) == "text"), None)
@@ -95,7 +117,7 @@ def call_claude(client, note_text: str, open_tasks: list[dict], defaults: dict |
     return json.loads(text)
 
 
-def apply_actions(store: TaskStore, actions: list[dict]) -> tuple[list[str], list[dict]]:
+def apply_actions(store: TaskStore, actions: list[dict], changed_by: str = "Unknown") -> tuple[list[str], list[dict]]:
     """Returns (human-readable change descriptions, resulting task dicts)."""
     changes, results = [], []
     for action in actions:
@@ -108,7 +130,7 @@ def apply_actions(store: TaskStore, actions: list[dict]) -> tuple[list[str], lis
                 results.append(result)
             elif kind == "update":
                 task_id = action.pop("id")
-                result = store.update_task(id=task_id, **action)
+                result = store.update_task(id=task_id, changed_by=changed_by, **action)
                 changed_fields = ", ".join(f"{k}={v}" for k, v in action.items())
                 changes.append(f"Updated #{task_id} ({result['owner']}): {changed_fields}")
                 results.append(result)

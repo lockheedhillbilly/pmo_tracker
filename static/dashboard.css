@@ -26,9 +26,16 @@ body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,san
 
 header { position:sticky; top:0; z-index:30; height:52px; padding:0 20px; display:flex; justify-content:space-between; align-items:center; background:rgba(23,74,53,.94); backdrop-filter:blur(16px) saturate(160%); -webkit-backdrop-filter:blur(16px) saturate(160%); color:#fff; box-shadow:0 1px 12px rgba(0,0,0,.15); }
 .header-left { display:flex; align-items:center; gap:10px; }
+.sidebar-toggle-btn { display:none; background:#ffffff1c; color:#fff; border:none; }
+.sidebar-toggle-btn:hover { background:#ffffff2e; }
+.sidebar-scrim { display:none; }
 .brand-mark { font-size:16px; color:#8FE0BC; }
 header h1 { font-size:14px; margin:0; line-height:1.25; font-weight:600; letter-spacing:-.01em; }
 .header-sub { font-size:10.5px; color:#AFE0C6; font-weight:400; }
+.header-right { display:flex; align-items:center; gap:12px; }
+.bell-btn { position:relative; background:#ffffff1c; color:#fff; border:none; }
+.bell-btn:hover { background:#ffffff2e; }
+.bell-dot { position:absolute; top:5px; right:6px; width:7px; height:7px; border-radius:50%; background:var(--red); border:1.5px solid var(--green); }
 .tabs { display:flex; gap:4px; }
 .tab { padding:6px 14px; border-radius:var(--r-sm) var(--r-sm) 0 0; cursor:pointer; background:#ffffff1c; font-size:12px; }
 .tab.active { background:#fff; color:var(--green); font-weight:600; }
@@ -36,11 +43,26 @@ header h1 { font-size:14px; margin:0; line-height:1.25; font-weight:600; letter-
 .app-shell { display:flex; align-items:flex-start; }
 .sidebar { width:184px; flex-shrink:0; background:#FBFBFC; border-right:1px solid var(--border-soft); height:calc(100vh - 52px); position:sticky; top:52px; padding:16px 10px; overflow-y:auto; }
 .sidebar-label { font-size:10px; text-transform:uppercase; letter-spacing:.07em; color:var(--mute); font-weight:600; padding:2px 10px 8px; }
-.nav-item { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:var(--r-sm); font-size:12.5px; color:#3A3A3E; cursor:pointer; margin-bottom:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:background .1s ease; }
+.nav-item { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:var(--r-sm); font-size:12.5px; color:#3A3A3E; text-decoration:none; cursor:pointer; margin-bottom:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:background .1s ease; }
 .nav-item:hover { background:#EFEFF1; }
 .nav-item.active { background:var(--accent-tint); color:var(--green); font-weight:600; }
 .nav-item .icon { color:var(--mute); }
 .nav-item.active .icon { color:var(--green); }
+
+.activity-day-grid { display:grid; grid-template-columns:repeat(5, 1fr); gap:4px; padding:0 10px; }
+.activity-day-cell { aspect-ratio:1; border:1px solid var(--border-soft); background:#fff; border-radius:6px; font-size:11px; font-family:inherit; color:var(--gray); cursor:pointer; display:flex; align-items:center; justify-content:center; padding:0; }
+.activity-day-cell:hover { background:var(--border-soft); }
+.activity-day-cell.today { background:var(--accent-tint); color:var(--green); font-weight:700; border-color:var(--accent); }
+
+.groupby-item { display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:var(--r-sm); font-size:12.5px; color:#3A3A3E; cursor:pointer; margin-bottom:1px; }
+.groupby-item:hover { background:#EFEFF1; }
+.groupby-item.active { background:var(--accent-tint); color:var(--green); font-weight:600; }
+.groupby-order { width:14px; height:14px; border-radius:50%; background:var(--green); color:#fff; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.groupby-item:not(.active) .groupby-order { background:transparent; }
+.groupby-label { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.groupby-controls { display:flex; gap:4px; flex-shrink:0; }
+.groupby-move, .groupby-remove { color:var(--mute); font-size:11px; padding:1px 3px; border-radius:4px; }
+.groupby-move:hover, .groupby-remove:hover { background:#ffffff; color:var(--green); }
 
 main { flex:1; min-width:0; padding:18px 22px; transition:margin-right .15s; }
 
@@ -158,6 +180,8 @@ tr.selected td.done-cell { background:var(--accent-tint); }
 .exec-select:hover { border-color:var(--border); }
 .exec-select:focus { outline:none; border-color:var(--accent); }
 .exec-select option { color:var(--ink); background:#fff; font-weight:400; }
+.blocked-indicator { display:inline-flex; color:var(--red); margin-left:3px; vertical-align:middle; cursor:default; }
+.blocked-indicator .icon { width:11px; height:11px; }
 
 .review-chip { display:inline-flex; align-items:center; gap:4px; font-size:10px; padding:2px 7px; border-radius:9px; cursor:pointer; white-space:normal; line-height:1.3; text-align:center; }
 .review-chip.pending { background:var(--purple-tint); color:var(--purple); }
@@ -205,6 +229,12 @@ tr.selected td.done-cell { background:var(--accent-tint); }
 .note-item .actions { display:flex; gap:8px; font-size:10px; color:var(--accent); cursor:pointer; margin-top:3px; }
 #notes-panel .note-input { width:100%; padding:7px 8px; border:1px solid var(--border); border-radius:var(--r-sm); font-size:12px; }
 .note-edit-input { width:100%; padding:6px 7px; border:1px solid var(--accent); border-radius:var(--r-sm); font-size:12px; font-family:inherit; resize:none; margin-top:2px; }
+.np-tabs { display:flex; gap:4px; margin-bottom:10px; border-bottom:1px solid var(--border-soft); }
+.np-tab { padding:6px 4px; font-size:12px; color:var(--gray); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.np-tab.active { color:var(--green); font-weight:600; border-bottom-color:var(--accent); }
+.history-list { flex:1; margin-bottom:10px; overflow-y:auto; }
+.history-item { border-bottom:1px solid var(--border-soft); padding:8px 0; font-size:11px; line-height:1.5; color:#3A3A3E; }
+.history-item .hv { font-weight:600; color:var(--ink); }
 
 .filter-panel { position:absolute; background:#fff; border:1px solid var(--border-soft); border-radius:var(--r-md); box-shadow:var(--shadow-lg); z-index:30; padding:10px; min-width:230px; max-height:320px; overflow:auto; animation:popIn .12s ease-out; }
 .filter-panel input[type=text] { width:100%; margin-bottom:8px; padding:7px 8px; font-size:13px; border:1px solid var(--border); border-radius:var(--r-sm); }
@@ -229,3 +259,37 @@ tr.selected td.done-cell { background:var(--accent-tint); }
 .toast a { color:#8FE0BC; cursor:pointer; font-weight:700; }
 
 #gantt-view { background:#fff; border-radius:var(--r-md); padding:16px; box-shadow:var(--shadow-sm); border:1px solid var(--border-soft); }
+
+.capture-wrap { background:#fff; border-radius:var(--r-md); padding:20px; box-shadow:var(--shadow-sm); border:1px solid var(--border-soft); max-width:760px; }
+#capture-input { width:100%; padding:12px; border:1px solid var(--border); border-radius:var(--r-sm); font-size:13px; font-family:inherit; resize:vertical; margin:8px 0 12px; }
+.capture-actions { display:flex; gap:8px; margin-bottom:16px; }
+.capture-result-item { padding:8px 10px; border-radius:var(--r-sm); font-size:12.5px; margin-bottom:6px; background:var(--accent-tint); color:var(--green); }
+.capture-result-item.failed { background:var(--red-tint); color:var(--red); }
+.capture-result-item.skipped { background:var(--border-soft); color:var(--gray); }
+
+/* Project tab reuses .capture-wrap but holds a full reference doc, not a short
+   paste box — wider on desktop, and the textarea needs its own sizing since it
+   doesn't share #capture-input's id. */
+#project-view .capture-wrap { max-width:min(1100px, 100%); }
+#project-context-input { width:100%; min-height:60vh; padding:12px; border:1px solid var(--border); border-radius:var(--r-sm); font-size:13px; font-family:'SF Mono',Consolas,monospace; line-height:1.5; resize:vertical; margin:8px 0 12px; box-sizing:border-box; }
+
+/* Narrow screens (phones): the sidebar becomes an off-canvas overlay instead of a permanent
+   184px-wide column — on a 375px screen that column alone was eating ~half the width. Scoped
+   entirely to this media query so desktop layout is byte-for-byte unchanged. */
+@media (max-width: 700px) {
+  .sidebar-toggle-btn { display:inline-flex; }
+  .header-sub { display:none; }
+  .sidebar {
+    position:fixed; top:52px; left:0; bottom:0; z-index:45; width:260px;
+    transform:translateX(-100%); transition:transform .18s ease; box-shadow:var(--shadow-lg);
+  }
+  .sidebar.open { transform:translateX(0); }
+  .sidebar-scrim.open {
+    display:block; position:fixed; top:52px; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,.35); z-index:44;
+  }
+  main { padding:12px; }
+  .summary { gap:8px; }
+  .metric { padding:9px 12px; flex:1 1 calc(50% - 8px); }
+  #notes-panel { width:100%; }
+}

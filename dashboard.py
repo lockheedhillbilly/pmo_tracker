@@ -1,22 +1,31 @@
-"""Local editable dashboard for the PMO tracker. Runs ONLY on your machine
-(Flask dev server, localhost-only) and reads/writes the same tasks.db the
-chat tools and email scripts use — one source of truth.
+"""Web dashboard for the PMO tracker (deploys to Vercel via dashboard:app,
+see pyproject.toml) and reads/writes the same database the chat tools and
+email scripts use — one source of truth.
 
 Covers: pivoting (view by / then by), inline + group-level add rows with
-paste-to-parse, a fixed/sticky completion column, Excel-style filters with
-active-filter chips, bulk actions, row + column drag reorder, a column
-manager, saved views, a review workflow, per-task notes, and keyboard
-shortcuts. See chat for what was deliberately simplified or deferred
-(review history/audit trail, note @mentions/link previews, a "created by"
-column — there's no identity system across chat/email/dashboard to support
-one truthfully).
+paste-to-parse, a dedicated Capture tab for pasting notes/emails, a
+fixed/sticky completion column, Excel-style filters with active-filter
+chips, bulk actions, row + column drag reorder, a column manager, saved
+views, a review workflow, per-task notes, an audit trail, task
+dependencies, custom fields, a formatted Excel export, a day-by-day
+activity browser, a project-context doc editable from its own tab, and
+keyboard shortcuts. See chat for what was deliberately simplified or
+deferred (note @mentions/link previews, a "created by" column on tasks
+themselves — there's no identity system across chat/email/dashboard to
+support one truthfully, so history entries fall back to "Unknown" for
+anything not made through this dashboard).
 """
 
+import io
 import os
 import sys
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 sys.path.insert(0, str(Path(__file__).parent))
 from db import (  # noqa: E402
@@ -75,10 +84,79 @@ def create_task():
 
 @app.patch("/api/tasks/<int:task_id>")
 def edit_task(task_id):
+    body = request.get_json(force=True)
+    body.setdefault("changed_by", CURRENT_USER)
     try:
-        return jsonify(store.update_task(id=task_id, **request.get_json(force=True)))
+        return jsonify(store.update_task(id=task_id, **body))
     except TrackerError as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.get("/api/tasks/<int:task_id>/history")
+def get_history(task_id):
+    return jsonify(store.list_history(task_id))
+
+
+@app.get("/api/history")
+def get_recent_history():
+    return jsonify(store.list_recent_history(
+        since=request.args.get("since"), until=request.args.get("until"),
+    ))
+
+
+@app.get("/api/export.xlsx")
+def export_xlsx():
+    tasks = store.list_tasks()
+    headers = [
+        "Track", "Use case", "Owner", "Collaborators", "Task", "Added", "Due", "Priority",
+        "Status", "Execution", "Review status", "Blocked by",
+    ]
+    by_id = {t["id"]: t["task"] for t in tasks}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "PMO Tasks"
+    ws.append(headers)
+    for t in tasks:
+        ws.append([
+            t["track"], t["module"] or "", t["owner"], t["collaborators"] or "", t["task"],
+            t["added"], t["due"], t["priority"], t["status"], t["execution_state"] or "",
+            t["review_status"] or "", by_id.get(t["blocked_by_id"], ""),
+        ])
+
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1B4D3E", end_color="1B4D3E", fill_type="solid")
+        cell.alignment = Alignment(horizontal="left", vertical="center")
+    ws.row_dimensions[1].height = 20
+
+    widths = [14, 20, 14, 20, 48, 12, 12, 10, 10, 14, 16, 32]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    # An Excel Table (not just auto_filter) gives filter dropdowns AND banded
+    # row styling in one step — this is the "pre-loaded filters" part.
+    last_col = get_column_letter(len(headers))
+    last_row = len(tasks) + 1
+    if len(tasks) > 0:
+        table = Table(displayName="PMOTasks", ref=f"A1:{last_col}{last_row}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2", showRowStripes=True, showFirstColumn=False,
+        )
+        ws.add_table(table)
+    else:
+        ws.auto_filter.ref = f"A1:{last_col}1"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    resp = Response(
+        buf.getvalue(),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    resp.headers["Content-Disposition"] = "attachment; filename=pmo_tasks.xlsx"
+    return resp
 
 
 @app.delete("/api/tasks/<int:task_id>")
@@ -101,6 +179,7 @@ def reorder():
 def bulk_update():
     body = request.get_json(force=True)
     ids, fields = body["ids"], body["fields"]
+    fields.setdefault("changed_by", CURRENT_USER)
     results = []
     for task_id in ids:
         try:
@@ -117,8 +196,9 @@ def parse_text():
     try:
         client = nlu.get_client()
         open_tasks = store.list_tasks(status="Open")
-        result = nlu.call_claude(client, text, open_tasks, defaults=defaults)
-        changes, results = nlu.apply_actions(store, result.get("actions", []))
+        project_context = nlu.get_project_context(store)
+        result = nlu.call_claude(client, text, open_tasks, defaults=defaults, project_context=project_context)
+        changes, results = nlu.apply_actions(store, result.get("actions", []), changed_by=CURRENT_USER)
         return jsonify({"changes": changes, "results": results, "notes": result.get("notes", "")})
     except Exception as e:
         return jsonify({"error": str(e)}), 400
@@ -163,6 +243,18 @@ def pin_note(note_id):
         return jsonify(store.toggle_pin_note(note_id))
     except TrackerError as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.get("/api/project-context")
+def get_project_context():
+    return jsonify({"content": nlu.get_project_context(store)})
+
+
+@app.post("/api/project-context")
+def save_project_context():
+    body = request.get_json(force=True)
+    store.set_setting("project_context", body.get("content", ""))
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

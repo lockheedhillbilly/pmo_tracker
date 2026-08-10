@@ -34,7 +34,9 @@ import nlu  # noqa: E402
 
 DEFAULT_DB_PATH = Path(__file__).parent / "tasks.db"
 DB_PATH = os.environ.get("PMO_TRACKER_DB_PATH", str(DEFAULT_DB_PATH))
-RECIPIENT = os.environ.get("PMO_TRACKER_DIGEST_TO")  # must be set in .env — no hardcoded fallback
+# Comma-separated for multiple recipients — must be set in .env, no hardcoded fallback
+_DIGEST_TO_RAW = os.environ.get("PMO_TRACKER_DIGEST_TO")
+RECIPIENTS = [r.strip() for r in _DIGEST_TO_RAW.split(",") if r.strip()] if _DIGEST_TO_RAW else []
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 SUBJECT_PREFIX = "PMO:"
@@ -112,11 +114,11 @@ def send_confirmation(subject: str, changes: list[str], notes: str) -> None:
     if notes:
         lines += ["", f"Note from parser: {notes}"]
     body_html = "<br>".join(l.replace(" ", "&nbsp;", 2) for l in lines)
-    send_via_gmail(subject, f"<div style='font-family:Segoe UI,Arial,sans-serif;font-size:13px;'>{body_html}</div>", RECIPIENT)
+    send_via_gmail(subject, f"<div style='font-family:Segoe UI,Arial,sans-serif;font-size:13px;'>{body_html}</div>", RECIPIENTS)
 
 
 def main() -> None:
-    if not RECIPIENT:
+    if not RECIPIENTS:
         log("ERROR: set PMO_TRACKER_DIGEST_TO in .env before running this.")
         return
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
@@ -143,14 +145,15 @@ def main() -> None:
         except Exception:
             pass  # label already exists
 
+        project_context = nlu.get_project_context(store)
         all_changes, all_notes = [], []
         for num, msg, subject, message_id in mails:
             body = extract_body(msg)
             log(f"Processing: {subject!r}")
             try:
                 open_tasks = store.list_tasks(status="Open")
-                result = nlu.call_claude(client, body, open_tasks)
-                changes, _ = nlu.apply_actions(store, result.get("actions", []))
+                result = nlu.call_claude(client, body, open_tasks, project_context=project_context)
+                changes, _ = nlu.apply_actions(store, result.get("actions", []), changed_by="Email")
                 notes = result.get("notes", "")
                 all_changes.extend(changes)
                 if notes:
