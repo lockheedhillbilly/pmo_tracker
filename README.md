@@ -23,6 +23,8 @@ content.
 | `build_vercel.py` | Vercel build step — mirrors `static/` into `public/static/`, since Vercel serves static assets from `public/**`, not a Flask app's own static folder |
 | `test_email_parsing.py` | Unit tests for the email-parsing helpers in `process_email_updates.py` |
 | `.github/workflows/pmo-cycle.yml` | Runs `run_cycle.py` twice daily via GitHub Actions — no local machine needed |
+| `PROJECT_CONTEXT.md` | Current engagement's team/workstreams/timeline/conventions — editable from the dashboard's "Project" tab, read by the parser for default-ownership inference |
+| `SETUP_GUIDE.md` | Generic, reusable guidance for filling in `PROJECT_CONTEXT.md` for a new engagement, plus known gaps to fix before reusing this for a genuinely different company |
 
 Tasks have an `owner` (the one accountable person) and an optional
 `collaborators` field (comma-separated) for others helping on the same

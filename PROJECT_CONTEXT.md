@@ -1,18 +1,19 @@
-# Project Context
+# Project Context (current engagement)
 
-This is the living reference for how this tracker's project is organized —
-team, workstreams, methodology, and conventions. Client/company names are
-deliberately excluded — this file is meant to work for any engagement, not
-just the one it was first written for. Two things read it:
+This is the current engagement's actual team, workstreams, methodology,
+and conventions — filled in per `SETUP_GUIDE.md`'s six questions. Two
+things read it:
 
 1. **You** (or a future Claude Code session) — read this first to get
    oriented, instead of re-deriving it from scratch.
-2. **The parser** (`nlu.py`) — this exact content is included in the prompt
-   used to turn a pasted note/email into structured task changes, so it can
-   infer a sensible default owner when one isn't stated. Edit it from the
-   dashboard's "Project" tab (or this file directly) any time the team or
-   structure changes; the dashboard's copy (once saved there) takes
-   precedence over this file.
+2. **The parser** (`nlu.py`) — this exact content is included in the
+   prompt used to turn a pasted note/email into structured task changes,
+   so it can infer a sensible default owner when one isn't stated.
+
+Edit it from the dashboard's "Project" tab (or this file directly) any
+time the team or structure changes — the dashboard's saved copy, once
+edited there, takes precedence over this file. See `SETUP_GUIDE.md` for
+the generic, reusable guidance this was filled in from.
 
 ## Team
 
@@ -50,21 +51,19 @@ Within Account Prioritization specifically, work is further organized by
 **offering / sub-offering** — e.g. "finalize offering:sub-offering mapping"
 is its own line of work, distinct from the top-level module. This level
 isn't a separate structured field today (it lives in the task text) — see
-"Known gaps" below.
+`SETUP_GUIDE.md`'s "Known gaps."
 
-## Methodology (this kind of engagement, generalized)
+## Methodology
 
-This tracker was built for a sales-intelligence / account-prioritization
-PoC. The pattern, if setting this up for a similar engagement:
+This engagement is a sales-intelligence / account-prioritization PoC:
 
 - **Signals** feed an account-scoring engine, split into two tiers:
   - **Anchor signals** — strong, primary indicators (e.g. an active RFP).
   - **Corroborator signals** — supporting, secondary indicators (e.g. a
     firmographic match). Signals sometimes get *reclassified* between the
     two tiers as testing reveals their real predictive strength.
-- **Third-party intent-data vendors** (e.g. Bombora, HG) are typical
-  external data sources feeding those signals — expect data-download and
-  integration tasks tied to whichever vendors the engagement uses.
+- **Third-party intent-data vendors** (Bombora, HG) are the external data
+  sources feeding those signals.
 - **Pilot accounts**: a small number of real accounts are used to validate
   that signals fire correctly and that offering mapping produces sensible
   output, before wider rollout.
@@ -76,9 +75,9 @@ PoC. The pattern, if setting this up for a similar engagement:
 
 A 7-week PoC. Week 1 started **Monday, 13 July 2026** (this is the
 `WEEK1_MONDAY` constant in `static/dashboard.js` and `send_digest.py` —
-update both if this changes for a new engagement), so Week 7 ends around
-**31 August 2026**. No further phase-level breakdown (e.g. "Discovery =
-weeks 1-2") is recorded yet — see "Known gaps."
+update both if this changes), so Week 7 ends around **31 August 2026**.
+No further phase-level breakdown (e.g. "Discovery = weeks 1-2") is
+recorded yet.
 
 ## Conventions
 
@@ -94,25 +93,3 @@ weeks 1-2") is recorded yet — see "Known gaps."
   separate tasks/owners, unless the note clearly describes one joint
   effort — in that case, one task with the first-named person as owner and
   the rest as collaborators.
-
-## Known gaps (things to fix before reusing this for a genuinely different company)
-
-- **Tracks, priorities, and statuses are hardcoded** in `db.py` (Python
-  constants + SQL `CHECK` constraints), not configurable data. Onboarding
-  a new company today means editing code, not filling in a form.
-- **`WEEK1_MONDAY` is hardcoded** in two separate JS/Python files (see
-  Timeline above) rather than being one piece of project config.
-- **No structured team roster** — the team table above is prose an LLM
-  interprets fresh each time, not data the code can look up directly. Fine
-  at this scale; would get slower/less deterministic with a larger team or
-  a longer doc.
-- **No name aliasing** — "Sparsh" vs. a nickname or last name would create
-  a second, fragmented owner rather than resolving to the same person.
-
-## When this changes
-
-If the project's team, workstreams, or timeline change, update this
-document (or ask Claude to update it) with the new specifics — who's on
-the team now, what the workstreams are, any sub-workstreams, and the
-broad timeline. Everything downstream (the parser's default-ownership
-behavior, this reference doc) follows from what's written here.
