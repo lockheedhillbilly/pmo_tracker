@@ -76,6 +76,7 @@ function renderWeekView() {
     </div>
     <div class="week-subtabs">
       <button class="secondary small${weekSubview === "categories" ? " toggle-on" : ""}" data-weeksub="categories">Categories</button>
+      <button class="secondary small${weekSubview === "byday" ? " toggle-on" : ""}" data-weeksub="byday">By day</button>
       <button class="secondary small${weekSubview === "threeweek" ? " toggle-on" : ""}" data-weeksub="threeweek">Last / This / Next week</button>
     </div>
     ${weekSubview === "categories"
@@ -86,9 +87,29 @@ function renderWeekView() {
           ${weekColHtml("Critical path", criticalOpen, "No critical tasks open", schedule)}
           ${weekColHtml("Upcoming milestones", upcomingMilestones, "No upcoming milestones", schedule)}
         </div>`
+      : weekSubview === "byday"
+      ? weekByDayHtml(iso, schedule)
       : weekThreeColumnHtml(iso, schedule)}
   `;
   wireWeekEvents();
+}
+
+// Day-by-day breakdown of the current week (Mon–Fri always shown; Sat/Sun only if something's
+// actually due then) — the "day view along the date" a live meeting walkthrough needs, as
+// distinct from the category buckets above or the 3-week due-range comparison.
+function weekByDayHtml(iso, schedule) {
+  const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const t0 = today();
+  const mon = GanttEngine.parseISO(iso.thisMon);
+  const blocks = [];
+  for (let i = 0; i < 7; i++) {
+    const d = GanttEngine.toISO(GanttEngine.addDays(mon, i));
+    const list = TASKS.filter((t) => t.due === d).sort((a, b) => (a.priority === "High" ? 0 : 1) - (b.priority === "High" ? 0 : 1));
+    if (i >= 5 && !list.length) continue; // hide empty weekend days
+    const label = `${dayNames[i]} &middot; ${fmtDateShort(d)}${d === t0 ? " — Today" : ""}`;
+    blocks.push(weekColHtml(label, list, "Nothing due", schedule));
+  }
+  return `<div class="week-day-list">${blocks.join("")}</div>`;
 }
 
 function weekThreeColumnHtml(iso, schedule) {

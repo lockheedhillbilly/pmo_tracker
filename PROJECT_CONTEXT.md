@@ -25,11 +25,13 @@ the generic, reusable guidance this was filled in from.
 | Aayushi | Business / Testing / UI | The most cross-functional contributor: business codification, account summaries, test case validation, offering mapping (business side) — *and* Overall UI work (HTML updates, deck updates). Don't assume she's testing-only. |
 | Hriday | Business / Testing | Test result review, signal validation. |
 | Harsh | UI | External/occasional — UI-specific discussions, not a regular task owner. |
+| Vijaya | Partner, Tech | Tech-side partner — cost/scalability decisions, data-sourcing tradeoffs (procure vs. downloaded alternates), and joint connects on the tech build. Not a hands-on task owner day-to-day; comes in for strategic/cost calls. |
 
 **Default ownership when a note doesn't name anyone:**
 - Business analysis or testing work -> Aayushi and/or Hriday
 - Tech/engineering work -> Sparsh and/or Abhishek
 - Cross-cutting review, scheduling, or "set up a meeting" items -> Akshit
+- Cost/scalability strategy or data-sourcing decisions -> Vijaya (often jointly with Akshit)
 
 ## Tracks (top-level)
 
@@ -41,6 +43,8 @@ the generic, reusable guidance this was filled in from.
 - Account Intelligence
 - Overall UI
 - Seller Copilot
+- OPPL Connect — cost/commercialization workstream: which data sources to procure vs. use from downloaded alternates, vendor data (e.g. Draup), internal/external commercialization framing.
+- Tech Build — the tech-partner-facing build track (Vijaya's joint connects): cost and scalability of signals, data-source tradeoffs from a build-cost lens.
 
 (New ones can appear — the parser infers a sensible new use-case name if a
 note clearly doesn't fit these.)

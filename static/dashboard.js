@@ -884,19 +884,21 @@ async function patchTaskChecked(id, fields) {
 async function boardIndentTask(id) {
   const rows = [...document.querySelectorAll("#task-rows tr.data-row")].map(r => parseInt(r.dataset.id));
   const idx = rows.indexOf(id);
-  if (idx <= 0) return;
+  if (idx <= 0) { showToast("Nothing above this task to nest it under"); return; }
   if (!(await patchTaskChecked(id, { parent_id: rows[idx - 1] }))) return;
   renderBoard();
+  showToast("Nested as a subtask");
 }
 async function boardPromoteTask(id) {
   const t = taskById(id);
-  if (!t || t.parent_id == null) return;
+  if (!t || t.parent_id == null) { showToast("Already at the top level"); return; }
   const parent = taskById(t.parent_id);
   const ok = parent && parent.parent_id != null
     ? await patchTaskChecked(id, { parent_id: parent.parent_id })
     : await patchTaskChecked(id, { clear_parent: true });
   if (!ok) return;
   renderBoard();
+  showToast("Promoted to top level");
 }
 
 function toggleSelect(id, tr) {
@@ -992,6 +994,8 @@ function openRowMenu(anchor, id) {
     <div class="pop-item" data-act="move">Move to another use case</div>
     <div class="pop-item" data-act="collab">Edit collaborators</div>
     <div class="pop-item" data-act="blocked">${t.blocked_by_id ? "Change blocked-by" : "Mark as blocked by…"}</div>
+    <div class="pop-item" data-act="indent">Nest under task above (subtask)</div>
+    ${t.parent_id != null ? `<div class="pop-item" data-act="promote">Promote to top level</div>` : ""}
     <div class="pop-item" data-act="link">Copy task link</div>
     <hr>
     <div class="pop-item danger" data-act="delete">Delete</div>
@@ -1047,6 +1051,8 @@ function openRowMenu(anchor, id) {
       closePopovers(); renderBoard(); showToast(val ? "Blocked-by set" : "Blocked-by cleared");
     };
   };
+  pop.querySelector('[data-act="indent"]').onclick = () => { closePopovers(); boardIndentTask(id); };
+  pop.querySelector('[data-act="promote"]')?.addEventListener("click", () => { closePopovers(); boardPromoteTask(id); });
   pop.querySelector('[data-act="link"]').onclick = () => {
     const link = `${location.origin}/#task-${id}`;
     navigator.clipboard?.writeText(link);
