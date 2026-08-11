@@ -129,6 +129,16 @@ SCHEMA_STATEMENTS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_meetings_start_time ON meetings(start_time)",
     "CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status)",
+    # A running log of everything ever pasted into the Capture tab, kept even after it's
+    # been parsed and applied — so "what did I dump in here on Tuesday" is answerable by
+    # scrolling, not just the most recent parse result shown inline.
+    """CREATE TABLE IF NOT EXISTS captures (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        text       TEXT NOT NULL,
+        summary    TEXT,
+        created_at TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_captures_created_at ON captures(created_at)",
 ]
 
 MEETING_STATUSES = ("pending", "recording", "processing", "done", "failed")
@@ -372,6 +382,27 @@ class Meeting:
         d = asdict(self)
         d["summary"] = json.loads(self.summary) if self.summary else None
         return d
+
+
+@dataclass
+class Capture:
+    id: int
+    text: str
+    summary: str | None
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: libsql_client.Row) -> "Capture":
+        return cls(**row.asdict())
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["summary"] = json.loads(self.summary) if self.summary else None
+        return d
+
+
+def _capture_row_to_dict(row: libsql_client.Row) -> dict:
+    return Capture.from_row(row).to_dict()
 
 
 class TaskStore:
@@ -824,6 +855,28 @@ class TaskStore:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                 (key, value, _now_ist().isoformat()),
             )
+
+    # ---------- Capture history (every paste-to-parse submission, kept for scrollback) ----------
+
+    def add_capture(self, text: str, summary: list | str | None = None) -> dict:
+        if not text or not text.strip():
+            raise TrackerError("text is required")
+        summary_json = json.dumps(summary) if isinstance(summary, list) else summary
+        now = _now_ist().isoformat()
+        with _connect(self.db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO captures (text, summary, created_at) VALUES (?, ?, ?)",
+                (text, summary_json, now),
+            )
+            row = conn.execute("SELECT * FROM captures WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return _capture_row_to_dict(row)
+
+    def list_captures(self, limit: int = 100) -> list[dict]:
+        with _connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM captures ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [_capture_row_to_dict(r) for r in rows]
 
     # ---------- Meetings (populated by a separate local watcher/transcriber
     # process connecting to this same database directly) ----------

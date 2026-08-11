@@ -82,14 +82,32 @@
       </div>
     </div>
     <div id="capture-view" style="display:none;">
-      <div class="capture-wrap">
-        <div class="sidebar-label" style="padding-left:0;">Paste notes, meeting minutes, or an email body</div>
-        <textarea id="capture-input" rows="14" placeholder="Paste anything here — e.g. &quot;Sparsh to pull HGI numbers by Friday. Aayushi done with LinkedIn sync. Mark #12 as blocked.&quot;"></textarea>
-        <div class="capture-actions">
-          <button id="capture-parse-btn">Parse &amp; Apply</button>
-          <button class="secondary" id="capture-clear-btn">Clear</button>
+      <div class="week-subtabs">
+        <button class="secondary small toggle-on" data-capturesub="parse">Parse notes</button>
+        <button class="secondary small" data-capturesub="scratchpad">Scratchpad</button>
+      </div>
+      <div id="capture-parse-pane">
+        <div class="capture-wrap">
+          <div class="sidebar-label" style="padding-left:0;">Paste notes, meeting minutes, or an email body</div>
+          <textarea id="capture-input" rows="14" placeholder="Paste anything here — e.g. &quot;Sparsh to pull HGI numbers by Friday. Aayushi done with LinkedIn sync. Mark #12 as blocked.&quot;"></textarea>
+          <div class="capture-actions">
+            <button id="capture-parse-btn">Parse &amp; Apply</button>
+            <button class="secondary" id="capture-clear-btn">Clear</button>
+          </div>
+          <div id="capture-results"></div>
+          <div class="sidebar-label" style="padding-left:0;margin-top:24px;">History — everything pasted here before</div>
+          <div id="capture-history"></div>
         </div>
-        <div id="capture-results"></div>
+      </div>
+      <div id="capture-scratchpad-pane" style="display:none;">
+        <div class="capture-wrap">
+          <div class="sidebar-label" style="padding-left:0;">Running scratchpad — a rough working list you can edit any time. Nothing here drives task actions.</div>
+          <textarea id="scratchpad-input" rows="24" placeholder="Loading..."></textarea>
+          <div class="capture-actions">
+            <button id="scratchpad-save-btn">Save</button>
+          </div>
+          <div id="scratchpad-status"></div>
+        </div>
       </div>
     </div>
     <div id="meetings-view" style="display:none;">

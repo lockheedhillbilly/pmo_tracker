@@ -384,6 +384,32 @@ def test_set_setting_overwrites_existing_value(store):
     assert store.get_setting("project_context") == "v2"
 
 
+# ---------- Capture history ----------
+
+def test_add_capture_minimal(store):
+    c = store.add_capture("Sparsh to pull HGI numbers by Friday.")
+    assert c["id"] > 0
+    assert c["text"] == "Sparsh to pull HGI numbers by Friday."
+    assert c["summary"] is None
+
+
+def test_add_capture_with_summary(store):
+    c = store.add_capture("Some note", summary=["Updated task #3", "SKIPPED: no owner found"])
+    assert c["summary"] == ["Updated task #3", "SKIPPED: no owner found"]
+
+
+def test_add_capture_rejects_blank_text(store):
+    with pytest.raises(TrackerError):
+        store.add_capture("   ")
+
+
+def test_list_captures_most_recent_first(store):
+    store.add_capture("first")
+    store.add_capture("second")
+    captures = store.list_captures()
+    assert [c["text"] for c in captures[:2]] == ["second", "first"]
+
+
 # ---------- Meetings ----------
 
 def test_add_meeting_minimal(store):

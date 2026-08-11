@@ -721,10 +721,30 @@ function attachRowHandlers() {
     tr.querySelector(".rowmenu-btn").addEventListener("click", (e) => { e.stopPropagation(); openRowMenu(e.currentTarget, id); });
 
     tr.addEventListener("dragstart", () => { dragRowId = id; tr.style.opacity = "0.4"; });
-    tr.addEventListener("dragend", () => { tr.style.opacity = "1"; });
-    tr.addEventListener("dragover", (e) => e.preventDefault());
+    tr.addEventListener("dragend", () => {
+      tr.style.opacity = "1";
+      document.querySelectorAll(".drop-before,.drop-after,.drop-child").forEach((el) => el.classList.remove("drop-before", "drop-after", "drop-child"));
+    });
+    // Drop-zone by vertical thirds (same convention as the Gantt tab's row drag): top =
+    // insert before as a sibling, bottom = insert after as a sibling, middle = nest as
+    // a child of this row. Dropping onto a genuinely different group (when grouped by
+    // owner/use case) still reassigns that field instead — nesting only applies within
+    // the row's own group, so it can't silently move a task to a different owner/module.
+    tr.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (dragRowId === null || dragRowId === id) return;
+      const rect = tr.getBoundingClientRect();
+      const frac = (e.clientY - rect.top) / rect.height;
+      tr.classList.remove("drop-before", "drop-after", "drop-child");
+      if (frac < 0.25) tr.classList.add("drop-before");
+      else if (frac > 0.75) tr.classList.add("drop-after");
+      else tr.classList.add("drop-child");
+    });
+    tr.addEventListener("dragleave", () => tr.classList.remove("drop-before", "drop-after", "drop-child"));
     tr.addEventListener("drop", async (e) => {
       e.preventDefault();
+      const mode = tr.classList.contains("drop-before") ? "before" : tr.classList.contains("drop-after") ? "after" : "child";
+      tr.classList.remove("drop-before", "drop-after", "drop-child");
       if (dragRowId === null || dragRowId === id) return;
       const dragged = taskById(dragRowId), target = taskById(id);
       const field = groupFieldForViewBy();
@@ -734,14 +754,37 @@ function attachRowHandlers() {
         await loadTasks();
         return;
       }
-      const ids = [...document.querySelectorAll("#task-rows tr.data-row")].map(r => parseInt(r.dataset.id));
-      const from = ids.indexOf(dragRowId), to = ids.indexOf(id);
-      ids.splice(to, 0, ids.splice(from, 1)[0]);
-      await fetch("/api/reorder", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ids})});
-      sortCol = null;
-      await loadTasks();
+      await boardHandleRowDrop(dragRowId, id, mode);
     });
   });
+}
+
+// Mirrors ganttHandleRowDrop (static/gantt-view.js) so drag-to-nest behaves identically
+// on both tabs — reorders only within the affected siblings (store.reorder() leaves ids
+// not passed to it untouched), rather than re-sending every visible row's id.
+async function boardHandleRowDrop(dragId, targetId, mode) {
+  const target = taskById(targetId);
+  if (mode === "child") {
+    if (!(await patchTaskChecked(dragId, { parent_id: targetId }))) return;
+    const kids = TASKS.filter((t) => t.parent_id === targetId && t.id !== dragId).map((t) => t.id);
+    kids.push(dragId);
+    await fetch("/api/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: kids }) });
+    collapsedSubtasks.delete(targetId);
+    showToast("Nested as a subtask");
+  } else {
+    const newParent = target.parent_id || null;
+    const ok = newParent != null
+      ? await patchTaskChecked(dragId, { parent_id: newParent })
+      : await patchTaskChecked(dragId, { clear_parent: true });
+    if (!ok) return;
+    const siblings = TASKS.filter((t) => (t.parent_id || null) === newParent && t.id !== dragId).map((t) => t.id);
+    const idx = siblings.indexOf(targetId);
+    siblings.splice(mode === "before" ? idx : idx + 1, 0, dragId);
+    await fetch("/api/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: siblings }) });
+    showToast("Reordered");
+  }
+  sortCol = null;
+  await loadTasks();
 }
 
 function attachCellIconHandlers() {
@@ -1700,6 +1743,7 @@ document.querySelectorAll(".tab").forEach(tab => {
     });
     if (tab.dataset.tab === "project" && !projectContextLoaded) loadProjectContext();
     if (tab.dataset.tab === "meetings") loadMeetings();
+    if (tab.dataset.tab === "capture") loadCaptureHistory();
   };
 });
 
@@ -1823,6 +1867,7 @@ document.getElementById("capture-parse-btn").addEventListener("click", async () 
         showToast(`Applied ${data.results.length} change(s) to the board`);
       }
     }
+    await loadCaptureHistory();
   } catch (err) {
     resultsEl.innerHTML = `<div class="capture-result-item failed">Request failed: ${esc(err.message)}</div>`;
   } finally {
@@ -1832,6 +1877,74 @@ document.getElementById("capture-parse-btn").addEventListener("click", async () 
 document.getElementById("capture-clear-btn").addEventListener("click", () => {
   document.getElementById("capture-input").value = "";
   document.getElementById("capture-results").innerHTML = "";
+});
+
+// ---------- Capture history — a scrollback of every paste-to-parse submission ever made,
+// independent of whether parsing found anything (the server persists it either way). ----------
+async function loadCaptureHistory() {
+  const el = document.getElementById("capture-history");
+  try {
+    const captures = await (await fetch("/api/captures")).json();
+    el.innerHTML = captures.length
+      ? captures.map(renderCaptureEntry).join("")
+      : `<div class="added-text" style="padding:6px 0;">Nothing captured yet.</div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="capture-result-item failed">Failed to load history: ${esc(err.message)}</div>`;
+  }
+}
+function renderCaptureEntry(c) {
+  const summary = (c.summary || []).filter((s) => typeof s === "string");
+  const summaryHtml = summary.length
+    ? `<div class="capture-history-summary">${summary.map((s) => {
+        const cls = s.startsWith("FAILED") ? "failed" : s.startsWith("SKIPPED") ? "skipped" : "";
+        return `<div class="capture-result-item ${cls}">${esc(s)}</div>`;
+      }).join("")}</div>`
+    : "";
+  return `<div class="capture-history-item">
+    <div class="capture-history-time">${esc(fmtDateTimeFull(c.created_at))}</div>
+    <div class="capture-history-text">${esc(c.text)}</div>
+    ${summaryHtml}
+  </div>`;
+}
+
+// ---------- Capture sub-tabs (Parse notes / Scratchpad) — the scratchpad is a plain
+// autosave-on-click free-text field, no parsing, no task actions; just a running list. ----------
+let scratchpadLoaded = false;
+document.querySelectorAll("[data-capturesub]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("[data-capturesub]").forEach((b) => b.classList.toggle("toggle-on", b === btn));
+    const sub = btn.dataset.capturesub;
+    document.getElementById("capture-parse-pane").style.display = sub === "parse" ? "block" : "none";
+    document.getElementById("capture-scratchpad-pane").style.display = sub === "scratchpad" ? "block" : "none";
+    if (sub === "scratchpad" && !scratchpadLoaded) loadScratchpad();
+  });
+});
+async function loadScratchpad() {
+  const input = document.getElementById("scratchpad-input");
+  try {
+    const r = await fetch("/api/scratchpad");
+    const data = await r.json();
+    input.value = data.content || "";
+    scratchpadLoaded = true;
+  } catch (err) {
+    input.placeholder = "Failed to load: " + err.message;
+  }
+}
+document.getElementById("scratchpad-save-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("scratchpad-save-btn");
+  const statusEl = document.getElementById("scratchpad-status");
+  const content = document.getElementById("scratchpad-input").value;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await fetch("/api/scratchpad", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({content})});
+    statusEl.textContent = "Saved.";
+    showToast("Scratchpad saved");
+  } catch (err) {
+    statusEl.textContent = "Failed to save: " + err.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "Save";
+    setTimeout(() => { statusEl.textContent = ""; }, 3000);
+  }
 });
 
 // ---------- Keyboard shortcuts ----------

@@ -267,9 +267,33 @@ def parse_text():
         project_context = nlu.get_project_context(store)
         result = nlu.call_claude(client, text, open_tasks, defaults=defaults, project_context=project_context)
         changes, results = nlu.apply_actions(store, result.get("actions", []), changed_by=CURRENT_USER)
+        if text.strip():
+            store.add_capture(text, summary=changes)
         return jsonify({"changes": changes, "results": results, "notes": result.get("notes", "")})
     except Exception as e:
+        if text.strip():
+            try:
+                store.add_capture(text, summary=[f"FAILED: {e}"])
+            except TrackerError:
+                pass
         return jsonify({"error": str(e)}), 400
+
+
+@app.get("/api/captures")
+def get_captures():
+    return jsonify(store.list_captures())
+
+
+@app.get("/api/scratchpad")
+def get_scratchpad():
+    return jsonify({"content": store.get_setting("capture_scratchpad") or ""})
+
+
+@app.post("/api/scratchpad")
+def save_scratchpad():
+    body = request.get_json(force=True)
+    store.set_setting("capture_scratchpad", body.get("content", ""))
+    return jsonify({"ok": True})
 
 
 @app.get("/api/tasks/<int:task_id>/notes")
