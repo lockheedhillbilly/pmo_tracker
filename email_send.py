@@ -8,13 +8,18 @@ checkboxes + one click), not a review-then-send flow.
 
 from __future__ import annotations
 
+import os
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from send_digest import GMAIL_ADDRESS, GMAIL_APP_PASSWORD
-
 import smtplib
+
+# Not imported from send_digest.py — that module is excluded from the Vercel deployment
+# bundle (.vercelignore, since its Outlook-COM code can't run there anyway), so importing
+# from it would break the dashboard's own import chain on every request.
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 
 
 def compose_with_attachment(
