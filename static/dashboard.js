@@ -35,13 +35,14 @@ const ALL_COLUMNS = {
   task:   { label: "Task", width: "auto" },
   added:  { label: "Added", width: "64px" },
   due:    { label: "Due", width: "78px" },
+  baseline_end: { label: "Target end", width: "84px" },
   priority: { label: "Pri.", width: "30px", center: true },
   execution_state: { label: "Execution", width: "92px", center: true },
   review: { label: "Review", width: "58px", center: true },
   notes:  { label: "Notes", width: "230px" },
   updated_at: { label: "Updated", width: "90px" },
 };
-const DEFAULT_COLUMNS = ["module","owner","task","added","due","priority","execution_state","review","notes"];
+const DEFAULT_COLUMNS = ["module","owner","task","added","due","baseline_end","priority","execution_state","review","notes"];
 // Columns without a working filter panel (see openFilterPanel) don't get a dropdown affordance —
 // showing one just for it to say "No filter for this column" is dead UI that eats column width.
 const FILTERABLE_COLUMNS = new Set(["module","owner","priority","due"]);
@@ -73,6 +74,7 @@ const GROUP_DIMENSIONS = [
 ];
 let groupLevels = ["module"];
 let collapsedGroups = new Set();
+let collapsedSubtasks = new Set();
 let activeGroupAddRows = new Set();
 let columns = loadColumnsForView(groupLevels[0] || "flat");
 let columnWidths = JSON.parse(localStorage.getItem("pmo_col_widths_v2") || "{}");
@@ -81,7 +83,14 @@ let dragRowId = null, dragCol = null;
 
 function loadColumnsForView(vb) {
   const raw = localStorage.getItem("pmo_cols_v2_" + vb);
-  return raw ? JSON.parse(raw) : DEFAULT_COLUMNS.slice();
+  const cols = raw ? JSON.parse(raw) : DEFAULT_COLUMNS.slice();
+  // One-time migration for views saved before "Target end" existed — brand new column, so
+  // there's no way a saved list could have deliberately excluded it yet.
+  if (!cols.includes("baseline_end")) {
+    const dueIdx = cols.indexOf("due");
+    cols.splice(dueIdx >= 0 ? dueIdx + 1 : cols.length, 0, "baseline_end");
+  }
+  return cols;
 }
 function saveColumnsForView() { localStorage.setItem("pmo_cols_v2_" + (groupLevels[0] || "flat"), JSON.stringify(columns)); }
 
@@ -131,14 +140,19 @@ async function loadTasks() {
 }
 async function patchTask(id, fields) {
   const r = await fetch(`/api/tasks/${id}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify(fields)});
-  const updated = await r.json();
+  const data = await r.json();
+  if (!r.ok) { showToast(data.error || "Update failed"); return null; }
   const idx = TASKS.findIndex(t => t.id === id);
-  if (idx >= 0) TASKS[idx] = updated;
-  return updated;
+  if (idx >= 0) TASKS[idx] = data;
+  return data;
 }
 function taskById(id) { return TASKS.find(t => t.id === id); }
 
-function renderAll() { buildHeader(); renderSummary(); renderBoard(); }
+function renderAll() {
+  buildHeader(); renderSummary(); renderBoard();
+  if (typeof renderGanttView === "function") renderGanttView();
+  if (typeof renderWeekView === "function") renderWeekView();
+}
 
 // ---------- Summary + quick filters ----------
 function renderSummary() {
@@ -263,6 +277,34 @@ function sortRowsWithinGroup(list) {
   return [...overdueRows, ...rest];
 }
 
+// Parent/child ordering (Tab-to-nest) via parent_id. Only takes over once something in view
+// is actually nested — otherwise behavior (including the overdue-first sort above) is
+// unchanged for users who haven't used nesting. An explicit column sort also skips this,
+// since sorting by e.g. due date would scramble parent/child adjacency into a misleading tree.
+function buildBoardHierarchy(list) {
+  const ids = new Set(list.map(t => t.id));
+  const byParent = new Map();
+  list.forEach(t => {
+    const p = (t.parent_id != null && ids.has(t.parent_id)) ? t.parent_id : null;
+    if (!byParent.has(p)) byParent.set(p, []);
+    byParent.get(p).push(t);
+  });
+  for (const arr of byParent.values()) arr.sort((a, b) => a.sort_order - b.sort_order);
+  const rows = [];
+  (function walk(parentId, depth) {
+    for (const t of byParent.get(parentId) || []) {
+      const hasKids = (byParent.get(t.id) || []).length > 0;
+      rows.push({ task: t, depth, hasKids });
+      if (hasKids && !collapsedSubtasks.has(t.id)) walk(t.id, depth + 1);
+    }
+  })(null, 0);
+  return rows;
+}
+function rowsForRender(list) {
+  if (!sortCol && list.some(t => t.parent_id != null)) return buildBoardHierarchy(list);
+  return sortRowsWithinGroup(list).map(t => ({ task: t, depth: 0, hasKids: false }));
+}
+
 // ---------- Header ----------
 function visibleColumns() {
   // don't show a column that duplicates any active pivot level — those group headers already say it
@@ -330,7 +372,7 @@ function buildHeader() {
 }
 
 // ---------- Cell rendering ----------
-function renderCell(t, key) {
+function renderCell(t, key, depth = 0, hasKids = false) {
   if (key === "module") return `<td class="editable-cell" data-field="module"><span class="mod-dot" style="background:${moduleColor(t.module)};"></span><span class="mod-text">${esc(t.module||t.track)}</span></td>`;
   if (key === "owner") {
     const collabHtml = collaboratorList(t).map(c =>
@@ -340,13 +382,20 @@ function renderCell(t, key) {
   }
   if (key === "task") {
     const newBadge = isNew(t) ? `<span class="badge new-badge">New</span> ` : "";
-    return `<td class="editable-cell task-cell" data-field="task">${newBadge}<span class="task-text" title="${esc(t.task)}">${esc(t.task)}</span></td>`;
+    const caret = hasKids
+      ? `<span class="board-caret" data-subtask-caret="${t.id}">${collapsedSubtasks.has(t.id) ? "&#9656;" : "&#9662;"}</span>`
+      : "";
+    return `<td class="editable-cell task-cell" data-field="task" style="padding-left:${8 + depth * 16}px;">${caret}${newBadge}<span class="task-text" title="${esc(t.task)}">${esc(t.task)}</span></td>`;
   }
   if (key === "added") return `<td><span class="added-text" title="${esc(fmtDateTimeFull(t.added+'T00:00:00'))} · Added by ${esc(t.owner)}">${fmtDateShort(t.added)}</span></td>`;
   if (key === "due") {
     const cls = isOverdue(t) ? "overdue" : isDueSoon(t) ? "soon" : "";
     const label = isOverdue(t) ? `${fmtDateShort(t.due)} (overdue)` : fmtDateShort(t.due);
     return `<td class="editable-cell" data-field="due"><span class="due-text ${cls}">${label}</span></td>`;
+  }
+  if (key === "baseline_end") {
+    // Not the live deadline (that's `due`) — a planning-time target, so it never turns red/overdue.
+    return `<td class="editable-cell" data-field="baseline_end"><span class="added-text">${t.baseline_end ? fmtDateShort(t.baseline_end) : "—"}</span></td>`;
   }
   if (key === "priority") return `<td class="cell-center"><span class="priority-flag ${t.priority==='High'?'high':''}" data-priority-for="${t.id}" title="${t.priority==='High'?'High priority — click to clear':'Click to mark High priority'}">${t.priority==='High'?'⚑':'⚐'}</span></td>`;
   if (key === "execution_state") {
@@ -392,13 +441,13 @@ function renderReviewCell(t) {
 }
 
 let snoCounter = 0;
-function renderDataRow(t) {
+function renderDataRow(t, depth = 0, hasKids = false) {
   const rowClasses = ["data-row"];
   if (isOverdue(t)) rowClasses.push("overdue-row");
   if (t.status === "Done") rowClasses.push("done-row");
   if (selected.has(t.id)) rowClasses.push("selected");
   if (activeRowId === t.id) rowClasses.push("active-row");
-  const cells = visibleColumns().map(key => renderCell(t, key)).join("");
+  const cells = visibleColumns().map(key => renderCell(t, key, depth, hasKids)).join("");
   snoCounter += 1;
   return `<tr class="${rowClasses.join(' ')}" data-id="${t.id}" draggable="true" tabindex="0">
     <td class="done-cell"><div class="done-hit"><input type="checkbox" class="done-chk" ${t.status==='Done'?'checked':''}></div></td>
@@ -414,7 +463,7 @@ function renderDataRow(t) {
 // nesting stay unique per branch, not just per raw group value (two different top-level groups
 // can each have their own "Open" subgroup without colliding).
 function renderGroupedBoard(list, levels = groupLevels, pathPrefix = "", depth = 0) {
-  if (!levels.length) return sortRowsWithinGroup(list).map(renderDataRow).join("");
+  if (!levels.length) return rowsForRender(list).map(r => renderDataRow(r.task, r.depth, r.hasKids)).join("");
   const [dim, ...rest] = levels;
   const groups = {};
   list.forEach(t => { const k = groupKey(t, dim); (groups[k] = groups[k] || []).push(t); });
@@ -489,7 +538,7 @@ function attachGroupHandlers() {
       const groupValue = tr.dataset.group === "(no use case)" ? "" : tr.dataset.group;
       const dragged = taskById(dragRowId);
       if (dragged[field] === groupValue || (!dragged[field] && !groupValue)) return;
-      await patchTask(dragRowId, { [field]: groupValue });
+      if (!(await patchTask(dragRowId, { [field]: groupValue }))) return;
       showToast(`Moved to ${tr.dataset.group}`);
       await loadTasks();
     });
@@ -627,6 +676,14 @@ async function parsePasted(text, owner, module) {
 
 // ---------- Row interactions ----------
 function attachRowHandlers() {
+  document.querySelectorAll("[data-subtask-caret]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = parseInt(el.dataset.subtaskCaret);
+      if (collapsedSubtasks.has(id)) collapsedSubtasks.delete(id); else collapsedSubtasks.add(id);
+      renderBoard();
+    });
+  });
   document.querySelectorAll("#task-rows tr.data-row").forEach(tr => {
     const id = parseInt(tr.dataset.id);
 
@@ -653,6 +710,10 @@ function attachRowHandlers() {
       td.addEventListener("click", (e) => {
         if (e.ctrlKey || e.metaKey) return;
         if (td.querySelector("input,select")) return;
+        activeRowId = id;
+        // Owner opens its own popover (see openOwnerPopover) — without this, the same click
+        // bubbles to the document-level click-away listener and closes it instantly.
+        e.stopPropagation();
         startEdit(td, id);
       });
     });
@@ -668,7 +729,7 @@ function attachRowHandlers() {
       const dragged = taskById(dragRowId), target = taskById(id);
       const field = groupFieldForViewBy();
       if (field && dragged[field] !== target[field]) {
-        await patchTask(dragRowId, { [field]: target[field] || (field === "module" ? "" : target[field]) });
+        if (!(await patchTask(dragRowId, { [field]: target[field] || (field === "module" ? "" : target[field]) }))) return;
         showToast(`Moved to ${target[field] || "(no use case)"}`);
         await loadTasks();
         return;
@@ -700,7 +761,7 @@ function attachCellIconHandlers() {
       const t = taskById(id);
       if (!t.review_status) {
         // one click, no form: instantly assign to Akshit (the only reviewer)
-        await patchTask(id, { review_status: "Review pending", reviewer: CURRENT_USER });
+        if (!(await patchTask(id, { review_status: "Review pending", reviewer: CURRENT_USER }))) return;
         renderBoard(); renderSummary();
         showToast("Assigned to Akshit for review", () => { patchTask(id, {clear_review:true}).then(()=>{renderBoard();renderSummary();}); });
       } else {
@@ -730,6 +791,9 @@ function autoGrow(el) { el.style.height = "auto"; el.style.height = Math.min(el.
 
 function attachNotesInline(el) {
   const id = parseInt(el.dataset.notesFor);
+  // Default to showing the full note, not a clipped single line — rows=1 + overflow:hidden
+  // otherwise cuts text off mid-word even for a single short note, forcing a click just to read it.
+  autoGrow(el);
   // If this field is showing a note that's yours, editing it in place PATCHes that note
   // rather than creating a second one. Clearing it to empty and committing DELETEs it —
   // that's the explicit "remove this note" gesture, not a no-op.
@@ -784,7 +848,7 @@ function attachNotesInline(el) {
 
 async function toggleDone(id, tr, checked) {
   const newStatus = checked ? "Done" : "Open";
-  await patchTask(id, {status: newStatus});
+  if (!(await patchTask(id, {status: newStatus}))) { tr.querySelector(".done-chk").checked = !checked; return; }
   tr.classList.toggle("done-row", checked);
   renderSummary();
   if (checked) {
@@ -806,6 +870,35 @@ function deleteWithUndo(id) {
   });
 }
 
+// Checks r.ok before touching the TASKS cache — patchTask() doesn't, and a cycle-rejection
+// here (Tab-nesting a task under its own descendant) is an expected, recoverable outcome.
+async function patchTaskChecked(id, fields) {
+  const r = await fetch(`/api/tasks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields) });
+  const data = await r.json();
+  if (!r.ok) { showToast(data.error || "Update failed"); return null; }
+  const idx = TASKS.findIndex(t => t.id === id);
+  if (idx >= 0) TASKS[idx] = data;
+  return data;
+}
+
+async function boardIndentTask(id) {
+  const rows = [...document.querySelectorAll("#task-rows tr.data-row")].map(r => parseInt(r.dataset.id));
+  const idx = rows.indexOf(id);
+  if (idx <= 0) return;
+  if (!(await patchTaskChecked(id, { parent_id: rows[idx - 1] }))) return;
+  renderBoard();
+}
+async function boardPromoteTask(id) {
+  const t = taskById(id);
+  if (!t || t.parent_id == null) return;
+  const parent = taskById(t.parent_id);
+  const ok = parent && parent.parent_id != null
+    ? await patchTaskChecked(id, { parent_id: parent.parent_id })
+    : await patchTaskChecked(id, { clear_parent: true });
+  if (!ok) return;
+  renderBoard();
+}
+
 function toggleSelect(id, tr) {
   if (selected.has(id)) { selected.delete(id); tr.classList.remove("selected"); }
   else { selected.add(id); tr.classList.add("selected"); }
@@ -820,8 +913,9 @@ function renderBulkbar() {
 function startEdit(td, id) {
   const field = td.dataset.field;
   const t = taskById(id);
+  if (field === "owner") { openOwnerPopover(td, id); return; }
   let input;
-  if (field === "due") { input = document.createElement("input"); input.type = "date"; input.value = t.due; }
+  if (field === "due" || field === "baseline_end") { input = document.createElement("input"); input.type = "date"; input.value = t[field] || ""; }
   else if (field === "priority") {
     input = document.createElement("select");
     ["Normal","High"].forEach(p => { const o=document.createElement("option"); o.value=p; o.textContent=p; if (p===t.priority) o.selected=true; input.appendChild(o); });
@@ -839,8 +933,11 @@ function startEdit(td, id) {
     if (done) return; done = true;
     const val = input.value;
     const patch = field.startsWith("custom:") ? { custom_fields: { [field.slice(7)]: val } } : { [field]: val };
-    try { await patchTask(id, patch); renderBoard(); const flash = showToast("Saved"); setTimeout(flash, 1000); }
-    catch (err) { renderBoard(); }
+    try {
+      const result = await patchTask(id, patch);
+      renderBoard();
+      if (result) { const flash = showToast("Saved"); setTimeout(flash, 1000); }
+    } catch (err) { renderBoard(); }
   };
   const cancel = () => { if (!done) { done = true; td.innerHTML = original; } };
   input.addEventListener("keydown", (e) => {
@@ -849,6 +946,36 @@ function startEdit(td, id) {
     if (e.key === "Tab") { commit(); }
   });
   input.addEventListener("blur", commit);
+}
+
+// ---------- Owner cell popover — owner + collaborators together, one click, no submenu ----------
+function openOwnerPopover(anchor, id) {
+  closePopovers();
+  const t = taskById(id);
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.innerHTML = `
+    <label>Owner</label><input class="owner-edit-input" list="owner-list" value="${esc(t.owner)}">
+    <label style="margin-top:8px;">Collaborators (comma-separated)</label>
+    <input class="collab-edit-input" list="owner-list" value="${esc(t.collaborators||'')}" placeholder="e.g. Abhishek, Hriday">
+    <div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Save</button></div>
+  `;
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = (r.bottom + window.scrollY) + "px";
+  pop.style.left = (r.left + window.scrollX) + "px";
+  const ownerInput = pop.querySelector(".owner-edit-input");
+  ownerInput.focus(); ownerInput.select();
+  pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
+  pop.querySelector('[data-act="go"]').onclick = async () => {
+    const owner = ownerInput.value.trim();
+    if (!owner) { showToast("Owner is required"); return; }
+    const collaborators = pop.querySelector(".collab-edit-input").value;
+    await patchTask(id, { owner, collaborators });
+    closePopovers();
+    renderBoard();
+    showToast("Owner updated");
+  };
 }
 
 // ---------- Row "more" menu ----------
@@ -886,7 +1013,7 @@ function openRowMenu(anchor, id) {
   pop.querySelector('[data-act="review"]').onclick = async () => {
     closePopovers();
     if (!t.review_status) {
-      await patchTask(id, { review_status: "Review pending", reviewer: CURRENT_USER });
+      if (!(await patchTask(id, { review_status: "Review pending", reviewer: CURRENT_USER }))) return;
       renderBoard(); renderSummary(); showToast("Assigned to Akshit for review");
     } else { openReviewPopover(anchor, id); }
   };
@@ -897,13 +1024,13 @@ function openRowMenu(anchor, id) {
     e.stopPropagation();
     pop.innerHTML = `<label>Move to use case</label><input class="move-module" list="module-list" value="${esc(t.module||'')}"><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Move</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
-    pop.querySelector('[data-act="go"]').onclick = async () => { await patchTask(id, {module: pop.querySelector(".move-module").value}); closePopovers(); renderBoard(); showToast("Moved"); };
+    pop.querySelector('[data-act="go"]').onclick = async () => { if (!(await patchTask(id, {module: pop.querySelector(".move-module").value}))) return; closePopovers(); renderBoard(); showToast("Moved"); };
   };
   pop.querySelector('[data-act="collab"]').onclick = (e) => {
     e.stopPropagation();
     pop.innerHTML = `<label>Collaborators (comma-separated, in addition to owner ${esc(t.owner)})</label><input class="collab-input" list="owner-list" value="${esc(t.collaborators||'')}" placeholder="e.g. Abhishek, Hriday"><div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="go">Save</button></div>`;
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
-    pop.querySelector('[data-act="go"]').onclick = async () => { await patchTask(id, {collaborators: pop.querySelector(".collab-input").value}); closePopovers(); renderBoard(); showToast("Collaborators updated"); };
+    pop.querySelector('[data-act="go"]').onclick = async () => { if (!(await patchTask(id, {collaborators: pop.querySelector(".collab-input").value}))) return; closePopovers(); renderBoard(); showToast("Collaborators updated"); };
   };
   pop.querySelector('[data-act="blocked"]').onclick = (e) => {
     e.stopPropagation();
@@ -915,8 +1042,8 @@ function openRowMenu(anchor, id) {
     pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
     pop.querySelector('[data-act="go"]').onclick = async () => {
       const val = pop.querySelector(".blocked-by-select").value;
-      if (val) await patchTask(id, { blocked_by_id: parseInt(val) });
-      else await patchTask(id, { clear_blocked_by: true });
+      const ok = val ? await patchTask(id, { blocked_by_id: parseInt(val) }) : await patchTask(id, { clear_blocked_by: true });
+      if (!ok) return;
       closePopovers(); renderBoard(); showToast(val ? "Blocked-by set" : "Blocked-by cleared");
     };
   };
@@ -951,9 +1078,9 @@ function openReviewPopover(anchor, id) {
         <button class="secondary small" data-act="changes">Request changes</button>
         <button class="small" data-act="reviewed">Mark reviewed</button>
       </div>`;
-    pop.querySelector('[data-act="clear"]').onclick = async () => { await patchTask(id, {clear_review:true}); closePopovers(); renderBoard(); showToast("Review cleared"); };
-    pop.querySelector('[data-act="changes"]').onclick = async () => { await patchTask(id, {review_status:"Changes requested", review_comment: pop.querySelector(".rv-comment2").value || t.review_comment}); closePopovers(); renderBoard(); showToast("Changes requested"); };
-    pop.querySelector('[data-act="reviewed"]').onclick = async () => { await patchTask(id, {review_status:"Reviewed", review_comment: pop.querySelector(".rv-comment2").value || t.review_comment}); closePopovers(); renderBoard(); showToast("Marked reviewed"); };
+    pop.querySelector('[data-act="clear"]').onclick = async () => { if (!(await patchTask(id, {clear_review:true}))) return; closePopovers(); renderBoard(); showToast("Review cleared"); };
+    pop.querySelector('[data-act="changes"]').onclick = async () => { if (!(await patchTask(id, {review_status:"Changes requested", review_comment: pop.querySelector(".rv-comment2").value || t.review_comment}))) return; closePopovers(); renderBoard(); showToast("Changes requested"); };
+    pop.querySelector('[data-act="reviewed"]').onclick = async () => { if (!(await patchTask(id, {review_status:"Reviewed", review_comment: pop.querySelector(".rv-comment2").value || t.review_comment}))) return; closePopovers(); renderBoard(); showToast("Marked reviewed"); };
   }
   document.body.appendChild(pop);
   const r = anchor.getBoundingClientRect();
@@ -1302,6 +1429,58 @@ document.getElementById("sidebar").addEventListener("click", (e) => {
   if (e.target.closest(".groupby-item") && !e.target.closest(".groupby-controls")) closeSidebar();
 });
 
+// ---------- Email button — sends the latest plan via Gmail directly (no local Outlook to open
+// a draft in on a hosted server — see email_send.py). One click after picking recipients. ----------
+async function openEmailPopover(anchor) {
+  closePopovers();
+  const recipients = await (await fetch("/api/email/recipients")).json();
+  const pop = document.createElement("div");
+  pop.className = "popover";
+  pop.style.width = "270px";
+  pop.innerHTML = `
+    <label style="font-weight:600;">Send latest plan to</label>
+    <div class="email-recipient-list">
+      ${recipients.length ? recipients.map(r => `
+        <label class="email-recipient-item"><input type="checkbox" value="${esc(r.email)}"> ${esc(r.name)} <span class="added-text">(${esc(r.email)})</span></label>
+      `).join("") : `<div class="added-text" style="padding:4px 0;">No saved recipients yet</div>`}
+    </div>
+    <div style="display:flex; gap:4px; margin-top:8px;">
+      <input class="email-new-name" placeholder="Name" style="width:70px;">
+      <input class="email-new-email" placeholder="name@example.com" style="flex:1;">
+      <button class="secondary small" data-act="addrecipient">+</button>
+    </div>
+    <div class="actions"><button class="secondary small" data-act="cancel">Cancel</button><button class="small" data-act="send">Send</button></div>
+  `;
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = (r.bottom + window.scrollY) + "px";
+  pop.style.left = (r.right - 280 + window.scrollX) + "px";
+
+  pop.querySelector('[data-act="cancel"]').onclick = closePopovers;
+  pop.querySelector('[data-act="addrecipient"]').onclick = async (e) => {
+    e.stopPropagation();
+    const name = pop.querySelector(".email-new-name").value;
+    const email = pop.querySelector(".email-new-email").value.trim();
+    if (!email) return;
+    const resp = await fetch("/api/email/recipients", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, email }) });
+    const data = await resp.json();
+    if (!resp.ok) { showToast(data.error || "Could not add recipient"); return; }
+    openEmailPopover(anchor); // re-render with the new recipient now in the list
+  };
+  pop.querySelector('[data-act="send"]').onclick = async (e) => {
+    e.stopPropagation();
+    const checked = [...pop.querySelectorAll("input[type=checkbox]:checked")].map((cb) => cb.value);
+    if (!checked.length) { showToast("Select at least one recipient"); return; }
+    const btn = pop.querySelector('[data-act="send"]');
+    btn.textContent = "Sending…"; btn.disabled = true;
+    const resp = await fetch("/api/email/compose", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: checked }) });
+    const data = await resp.json();
+    closePopovers();
+    showToast(resp.ok ? "Sent" : (data.error || "Could not send email"));
+  };
+}
+document.getElementById("email-btn").addEventListener("click", (e) => { e.stopPropagation(); openEmailPopover(e.currentTarget); });
+
 // ---------- View settings popover (Columns / Density / Hide completed / Save view) — lives in
 // the sidebar now, not the toolbar, matching where display/config options usually sit. ----------
 document.getElementById("settings-btn").addEventListener("click", (e) => {
@@ -1504,7 +1683,7 @@ document.getElementById("bulk-due-apply").onclick = async () => {
 };
 document.getElementById("bulk-clear").onclick = () => { selected.clear(); renderBulkbar(); renderBoard(); };
 
-const TAB_VIEWS = { board: "board-view", capture: "capture-view", meetings: "meetings-view", project: "project-view", gantt: "gantt-view" };
+const TAB_VIEWS = { board: "board-view", capture: "capture-view", meetings: "meetings-view", project: "project-view", gantt: "gantt-view", week: "week-view" };
 let projectContextLoaded = false;
 document.querySelectorAll(".tab").forEach(tab => {
   tab.onclick = () => {
@@ -1665,6 +1844,8 @@ document.addEventListener("keydown", (e) => {
     else if (key === "r") { e.preventDefault(); const el = tr.querySelector("[data-review-for]"); if (el) openReviewPopover(el, activeRowId); }
     else if (key === "m") { e.preventDefault(); const el = tr.querySelector(".notes-inline"); if (el) el.focus(); }
     else if (key === "delete" || key === "backspace") { e.preventDefault(); openRowMenu(tr.querySelector(".rowmenu-btn"), activeRowId); tr.querySelector('[data-act="delete"]')?.click(); }
+    else if (key === "tab" && !e.shiftKey) { e.preventDefault(); boardIndentTask(activeRowId); }
+    else if (key === "tab" && e.shiftKey) { e.preventDefault(); boardPromoteTask(activeRowId); }
     else if (key === "arrowdown" || key === "arrowup") {
       e.preventDefault();
       const rows = [...document.querySelectorAll("#task-rows tr.data-row")];

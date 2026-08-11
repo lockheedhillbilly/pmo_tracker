@@ -285,6 +285,16 @@ def test_blocked_by_rejects_self_and_missing_task(store):
         store.update_task(id=t["id"], blocked_by_id=9999)
 
 
+def test_blocked_by_rejects_cycle(store):
+    a = store.add_task(track="Discovery", owner="Aayushi", task="A")
+    b = store.add_task(track="Discovery", owner="Aayushi", task="B")
+    c = store.add_task(track="Discovery", owner="Aayushi", task="C")
+    store.update_task(id=b["id"], blocked_by_id=a["id"])
+    store.update_task(id=c["id"], blocked_by_id=b["id"])
+    with pytest.raises(TrackerError):
+        store.update_task(id=a["id"], blocked_by_id=c["id"])
+
+
 # ---------- Custom fields ----------
 
 def test_custom_fields_merge_not_replace(store):
@@ -292,6 +302,69 @@ def test_custom_fields_merge_not_replace(store):
     store.update_task(id=t["id"], custom_fields={"Risk": "High"})
     updated = store.update_task(id=t["id"], custom_fields={"Effort": "3d"})
     assert updated["custom_fields"] == {"Risk": "High", "Effort": "3d"}
+
+
+# ---------- Gantt schema (hierarchy, scheduling fields) ----------
+
+def test_add_task_with_parent_and_scheduling_fields(store):
+    parent = store.add_task(track="Discovery", owner="Aayushi", task="Workstream")
+    child = store.add_task(
+        track="Discovery", owner="Sparsh", task="Subtask",
+        parent_id=parent["id"], start_date="2026-08-10", percent_complete=25,
+        pinned=True, dependency_type="FS", lag_days=2, is_milestone=False,
+    )
+    assert child["parent_id"] == parent["id"]
+    assert child["start_date"] == "2026-08-10"
+    assert child["percent_complete"] == 25
+    assert child["pinned"] == 1
+    assert child["dependency_type"] == "FS"
+    assert child["lag_days"] == 2
+    assert child["is_milestone"] == 0
+
+
+def test_add_task_rejects_missing_parent(store):
+    with pytest.raises(TrackerError):
+        store.add_task(track="Discovery", owner="Aayushi", task="X", parent_id=9999)
+
+
+def test_add_task_rejects_bad_dependency_type(store):
+    with pytest.raises(TrackerError):
+        store.add_task(track="Discovery", owner="Aayushi", task="X", dependency_type="XX")
+
+
+def test_update_task_set_and_clear_parent(store):
+    parent = store.add_task(track="Discovery", owner="Aayushi", task="Workstream")
+    child = store.add_task(track="Discovery", owner="Sparsh", task="Subtask")
+    updated = store.update_task(id=child["id"], parent_id=parent["id"])
+    assert updated["parent_id"] == parent["id"]
+    cleared = store.update_task(id=child["id"], clear_parent=True)
+    assert cleared["parent_id"] is None
+
+
+def test_update_task_rejects_self_parent(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    with pytest.raises(TrackerError):
+        store.update_task(id=t["id"], parent_id=t["id"])
+
+
+def test_update_task_rejects_parent_cycle(store):
+    a = store.add_task(track="Discovery", owner="Aayushi", task="A")
+    b = store.add_task(track="Discovery", owner="Aayushi", task="B", parent_id=a["id"])
+    c = store.add_task(track="Discovery", owner="Aayushi", task="C", parent_id=b["id"])
+    with pytest.raises(TrackerError):
+        store.update_task(id=a["id"], parent_id=c["id"])
+
+
+def test_update_task_baseline_and_milestone_fields(store):
+    t = store.add_task(track="Discovery", owner="Aayushi", task="X")
+    updated = store.update_task(
+        id=t["id"], baseline_start="2026-08-01", baseline_end="2026-08-05",
+        is_milestone=True, pinned=True,
+    )
+    assert updated["baseline_start"] == "2026-08-01"
+    assert updated["baseline_end"] == "2026-08-05"
+    assert updated["is_milestone"] == 1
+    assert updated["pinned"] == 1
 
 
 # ---------- Settings (project-context doc) ----------

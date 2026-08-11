@@ -145,7 +145,19 @@ _MIGRATED_COLUMNS = {
     "collaborators": "TEXT",
     "blocked_by_id": "INTEGER",
     "custom_fields": "TEXT",
+    # Gantt scheduling — extends this same tasks table rather than a parallel one, so
+    # Board/Gantt/Table/etc. all stay views over one shared dataset.
+    "parent_id": "INTEGER",          # NULL = top-level task; set = subtask of that task
+    "start_date": "TEXT",            # planned start; `due` is reused as the planned end
+    "baseline_start": "TEXT",        # snapshot for the Baseline-vs-Current toggle
+    "baseline_end": "TEXT",
+    "percent_complete": "INTEGER",
+    "pinned": "INTEGER",             # 0 = auto-scheduled, 1 = manually fixed
+    "dependency_type": "TEXT",       # FS/SS/FF/SF — only meaningful when blocked_by_id is set
+    "lag_days": "INTEGER",           # lead (negative) / lag (positive) on that dependency
+    "is_milestone": "INTEGER",       # zero-duration marker
 }
+DEPENDENCY_TYPES = ("FS", "SS", "FF", "SF")
 
 
 class TrackerError(ValueError):
@@ -273,6 +285,15 @@ class Task:
     review_comment: str | None
     blocked_by_id: int | None
     custom_fields: str | None
+    parent_id: int | None
+    start_date: str | None
+    baseline_start: str | None
+    baseline_end: str | None
+    percent_complete: int | None
+    pinned: int | None
+    dependency_type: str | None
+    lag_days: int | None
+    is_milestone: int | None
 
     @classmethod
     def from_row(cls, row: libsql_client.Row) -> "Task":
@@ -369,6 +390,13 @@ class TaskStore:
         source: str | None = None,
         collaborators: str | None = None,
         execution_state: str | None = None,
+        parent_id: int | None = None,
+        start_date: str | None = None,
+        percent_complete: int | None = None,
+        pinned: bool = False,
+        dependency_type: str | None = None,
+        lag_days: int | None = None,
+        is_milestone: bool = False,
     ) -> dict:
         if track not in TRACKS:
             raise TrackerError(f"track must be one of {TRACKS}, got {track!r}")
@@ -378,6 +406,8 @@ class TaskStore:
             raise TrackerError(f"status must be one of {STATUSES}, got {status!r}")
         if execution_state and execution_state not in EXECUTION_STATES:
             raise TrackerError(f"execution_state must be one of {EXECUTION_STATES}, got {execution_state!r}")
+        if dependency_type is not None and dependency_type not in DEPENDENCY_TYPES:
+            raise TrackerError(f"dependency_type must be one of {DEPENDENCY_TYPES}, got {dependency_type!r}")
         if not owner or not owner.strip():
             raise TrackerError("owner is required")
         if not task or not task.strip():
@@ -390,16 +420,22 @@ class TaskStore:
 
         now = _now_ist()
         with _connect(self.db_path) as conn:
+            if parent_id is not None:
+                parent = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
+                if parent is None:
+                    raise TrackerError(f"no task with id {parent_id} to use as parent")
             max_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM tasks").fetchone()[0]
             cur = conn.execute(
                 """INSERT INTO tasks
                    (track, module, owner, collaborators, task, added, due, due_assumed, priority, status,
-                    updated_at, source, sort_order, execution_state, custom_fields)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    updated_at, source, sort_order, execution_state, custom_fields,
+                    parent_id, start_date, percent_complete, pinned, dependency_type, lag_days, is_milestone)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     track, module, owner.strip(), collaborators, task.strip(),
                     now.date().isoformat(), due_date, int(due_assumed),
                     priority, status, now.isoformat(), source, max_order + 10, execution_state, "{}",
+                    parent_id, start_date, percent_complete, int(pinned), dependency_type, lag_days, int(is_milestone),
                 ),
             )
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -444,6 +480,16 @@ class TaskStore:
         blocked_by_id: int | None = None,
         clear_blocked_by: bool = False,
         custom_fields: dict | None = None,
+        parent_id: int | None = None,
+        clear_parent: bool = False,
+        start_date: str | None = None,
+        baseline_start: str | None = None,
+        baseline_end: str | None = None,
+        percent_complete: int | None = None,
+        pinned: bool | None = None,
+        dependency_type: str | None = None,
+        lag_days: int | None = None,
+        is_milestone: bool | None = None,
         changed_by: str | None = None,
     ) -> dict:
         if track is not None and track not in TRACKS:
@@ -460,14 +506,24 @@ class TaskStore:
             raise TrackerError(f"review_type must be one of {REVIEW_TYPES}, got {review_type!r}")
         if blocked_by_id is not None and blocked_by_id == id:
             raise TrackerError("a task cannot be blocked by itself")
+        if dependency_type is not None and dependency_type not in DEPENDENCY_TYPES:
+            raise TrackerError(f"dependency_type must be one of {DEPENDENCY_TYPES}, got {dependency_type!r}")
+        if parent_id is not None and parent_id == id:
+            raise TrackerError("a task cannot be its own parent")
 
         fields = {"track": track, "module": module, "owner": owner,
                   "collaborators": _normalize_collaborators(collaborators), "task": task,
                   "priority": priority, "status": status, "execution_state": execution_state,
                   "review_status": review_status, "reviewer": reviewer, "review_type": review_type,
                   "review_due": review_due, "review_comment": review_comment,
-                  "blocked_by_id": blocked_by_id}
+                  "blocked_by_id": blocked_by_id, "parent_id": parent_id,
+                  "start_date": start_date, "baseline_start": baseline_start, "baseline_end": baseline_end,
+                  "percent_complete": percent_complete, "dependency_type": dependency_type, "lag_days": lag_days}
         fields = {k: v for k, v in fields.items() if v is not None}
+        if pinned is not None:
+            fields["pinned"] = int(pinned)
+        if is_milestone is not None:
+            fields["is_milestone"] = int(is_milestone)
         if due is not None:
             fields["due"] = due
             fields["due_assumed"] = 0
@@ -476,6 +532,8 @@ class TaskStore:
                            "review_due": None, "review_comment": None})
         if clear_blocked_by:
             fields["blocked_by_id"] = None
+        if clear_parent:
+            fields["parent_id"] = None
 
         with _connect(self.db_path) as conn:
             existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (id,)).fetchone()
@@ -485,6 +543,28 @@ class TaskStore:
                 blocker = conn.execute("SELECT id FROM tasks WHERE id = ?", (blocked_by_id,)).fetchone()
                 if blocker is None:
                     raise TrackerError(f"no task with id {blocked_by_id} to block on")
+                # The CPM scheduler assumes the blocked_by_id chain is a DAG (in fact a
+                # forest, one predecessor per task) — walk it to reject a cycle up front.
+                cursor_id, depth = blocked_by_id, 0
+                while cursor_id is not None and depth < 1000:
+                    if cursor_id == id:
+                        raise TrackerError("cannot set blocked_by_id: would create a dependency cycle")
+                    row = conn.execute("SELECT blocked_by_id FROM tasks WHERE id = ?", (cursor_id,)).fetchone()
+                    cursor_id = row["blocked_by_id"] if row else None
+                    depth += 1
+            if parent_id is not None:
+                parent = conn.execute("SELECT id FROM tasks WHERE id = ?", (parent_id,)).fetchone()
+                if parent is None:
+                    raise TrackerError(f"no task with id {parent_id} to use as parent")
+                # Walk up the proposed parent's ancestor chain — if `id` appears in it,
+                # reparenting would create a cycle (e.g. making a task a subtask of its own subtask).
+                cursor_id, depth = parent_id, 0
+                while cursor_id is not None and depth < 1000:
+                    if cursor_id == id:
+                        raise TrackerError("cannot set parent: would create a cycle")
+                    row = conn.execute("SELECT parent_id FROM tasks WHERE id = ?", (cursor_id,)).fetchone()
+                    cursor_id = row["parent_id"] if row else None
+                    depth += 1
             if custom_fields:
                 merged = json.loads(existing["custom_fields"] or "{}")
                 merged.update(custom_fields)

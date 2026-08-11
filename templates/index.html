@@ -24,6 +24,7 @@
       <div class="tab" data-tab="meetings">Meetings</div>
       <div class="tab" data-tab="project">Project</div>
       <div class="tab" data-tab="gantt">Gantt</div>
+      <div class="tab" data-tab="week">This Week</div>
     </div>
   </div>
 </header>
@@ -54,6 +55,7 @@
           <button class="secondary small" id="expand-all-btn">Expand all</button>
           <button class="secondary small" id="collapse-all-btn">Collapse all</button>
           <button class="secondary small" id="filters-btn" style="display:none;">Clear filters</button>
+          <button class="secondary small" id="email-btn">Email</button>
           <button id="add-btn">+ Add task</button>
         </div>
       </div>
@@ -109,6 +111,7 @@
     <div id="gantt-view" style="display:none;">
       <p style="color:#6B7280;">Feature-level roadmap Gantt — pending design (see chat).</p>
     </div>
+    <div id="week-view" style="display:none;"></div>
   </main>
 </div>
 
@@ -119,5 +122,8 @@
   window.CURRENT_USER = {{ current_user | tojson }};
 </script>
 <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+<script src="{{ url_for('static', filename='gantt.js') }}"></script>
+<script src="{{ url_for('static', filename='gantt-view.js') }}"></script>
+<script src="{{ url_for('static', filename='week-view.js') }}"></script>
 </body>
 </html>

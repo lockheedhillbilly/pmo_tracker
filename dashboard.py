@@ -32,6 +32,10 @@ from db import (  # noqa: E402
     EXECUTION_STATES, PRIORITIES, REVIEW_STATUSES, REVIEW_TYPES, STATUSES, TRACKS,
     TaskStore, TrackerError,
 )
+import email_recipients  # noqa: E402
+import email_send  # noqa: E402
+import excel_export  # noqa: E402
+import excel_import  # noqa: E402
 import nlu  # noqa: E402
 
 DEFAULT_DB_PATH = Path(__file__).parent / "tasks.db"
@@ -157,6 +161,70 @@ def export_xlsx():
     )
     resp.headers["Content-Disposition"] = "attachment; filename=pmo_tasks.xlsx"
     return resp
+
+
+@app.get("/api/gantt/export.xlsx")
+def export_gantt_xlsx():
+    data = excel_export.build_workbook(store.list_tasks())
+    resp = Response(data, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp.headers["Content-Disposition"] = "attachment; filename=pmo_gantt.xlsx"
+    return resp
+
+
+@app.post("/api/gantt/import/preview")
+def preview_gantt_import():
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
+    try:
+        return jsonify(excel_import.parse_file(f.filename, f.read()))
+    except Exception as e:  # noqa: BLE001 — surface any parse failure (bad/corrupt file) as a 400
+        return jsonify({"error": str(e)}), 400
+
+
+@app.post("/api/gantt/import/commit")
+def commit_gantt_import():
+    body = request.get_json(force=True)
+    rows, mapping = body.get("rows", []), body.get("mapping", {})
+    return jsonify(excel_import.commit_rows(store, rows, mapping, changed_by=CURRENT_USER))
+
+
+@app.get("/api/email/recipients")
+def get_email_recipients():
+    return jsonify(email_recipients.list_recipients(store))
+
+
+@app.post("/api/email/recipients")
+def add_email_recipient():
+    body = request.get_json(force=True)
+    try:
+        return jsonify(email_recipients.add_recipient(store, body.get("name", ""), body.get("email", "")))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.delete("/api/email/recipients/<path:email_addr>")
+def delete_email_recipient(email_addr):
+    return jsonify(email_recipients.remove_recipient(store, email_addr))
+
+
+@app.post("/api/email/compose")
+def compose_email():
+    body = request.get_json(force=True)
+    to_emails = body.get("to") or []
+    if not to_emails:
+        return jsonify({"error": "No recipients selected"}), 400
+    try:
+        data = excel_export.build_workbook(store.list_tasks())
+        email_send.compose_with_attachment(
+            to_emails,
+            body.get("subject") or "PMO Tracker — latest plan",
+            body.get("note") or "Attached is the latest version of the plan.",
+            data, "pmo_gantt.xlsx",
+        )
+        return jsonify({"ok": True})
+    except Exception as e:  # noqa: BLE001 — most likely cause: bad Gmail credentials
+        return jsonify({"error": str(e)}), 400
 
 
 @app.delete("/api/tasks/<int:task_id>")
