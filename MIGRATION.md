@@ -1,11 +1,13 @@
 # Moving to a new machine (Windows -> Mac)
 
-Written 2026-08-12, before a laptop change. Goal: pick up exactly where we left off, with
-nothing lost. Read this top to bottom once before doing anything.
+Written 2026-08-12, before a laptop change; updated the same day after this repo itself moved
+into a OneDrive-synced folder (`Claude environment/tools/pmo-tracker-standalone`) specifically
+so this transfer would be simpler. Goal: pick up exactly where we left off, with nothing lost.
+Read this top to bottom once before doing anything.
 
 ## The short version
 
-Almost everything that matters is already **not** on this laptop:
+Almost everything that matters is already **not** tied to this laptop:
 
 - **All real task data** lives in Turso (hosted DB), not a local file. The dashboard, the
   Gantt tab, meetings, capture history, the project-context doc — all of it is already safe.
@@ -13,50 +15,50 @@ Almost everything that matters is already **not** on this laptop:
   `pmo-tracker-standalone.vercel.app`) and keeps running regardless of what happens to this
   laptop.
 - **The twice-daily email digest automation** runs on GitHub Actions, not this machine.
-- **All code for the actual product** (`pmo-tracker-standalone` repo) is committed and pushed
-  to GitHub — `git clone` on the new machine gets you 100% of it.
+- **This repo itself, including `.env`**, now lives inside OneDrive — it should already be
+  sitting on the new Mac once OneDrive finishes its first sync there, no `git clone` or
+  password-manager round-trip required for the common case. See `0_START_HERE_NEW_MAC.md`
+  (one level up, in `Claude environment/`) for the verify-then-fall-back-to-clone steps.
 
-What genuinely only exists on this Windows laptop and needs deliberate handling:
+What still needs deliberate handling on the new machine regardless:
 
-1. **Secrets** (`.env` files) — gitignored by design, never pushed anywhere.
-2. **The local meeting-watcher pipeline's Windows-only pieces** (Outlook COM, WASAPI audio) —
+1. **The local meeting-watcher pipeline's Windows-only pieces** (Outlook COM, WASAPI audio) —
    these need a different approach on Mac, not just a re-install.
-3. **Local tool logins** (`vercel` CLI, `gh` CLI if used, git credentials for push access).
-4. **This Claude Code session's own memory** — tied to this machine's `~/.claude`, doesn't
+2. **Local tool logins** (`vercel` CLI, `gh` CLI if used, git credentials for push access) —
+   these are per-machine by nature and were never going to transfer via any sync mechanism.
+3. **This Claude Code session's own memory** — tied to this machine's `~/.claude`, doesn't
    travel automatically.
 
 ## Before you touch the Windows laptop
 
-- [ ] Confirm `git status` is clean in `C:\dev\pmo-tracker-standalone` (it is, as of this
-      writing — everything through the meeting-watcher backup commit is pushed).
-- [ ] **Separately**, the original `sales_ai_copilot` repo (OneDrive-synced folder) has
-      uncommitted local changes and untracked files that I could **not** push from this
-      session — `git fetch` to its `origin` (github.com/Gupta-Sparsh_bcgprod/sales_ai_copilot)
+- [ ] Confirm `git status` is clean here (it was, as of the last check from this session).
+- [ ] Confirm OneDrive shows this folder as fully synced (green checkmark, not a spinning/
+      pending icon) before wiping anything — that's what the new Mac is actually relying on.
+- [ ] **Separately**, the original `sales_ai_copilot` repo (a *different*, older OneDrive-synced
+      folder) has uncommitted local changes and untracked files that I could **not** push from
+      this session — `git fetch` to its `origin` (github.com/Gupta-Sparsh_bcgprod/sales_ai_copilot)
       returned "Repository not found," meaning this session's git credentials don't have
-      access to it. Before wiping this laptop: from a terminal where you know that push
-      *does* work (or after fixing access), run `git add -A && git commit && git push` in that
-      folder, or at minimum confirm OneDrive has fully synced it (green checkmark, not a
-      spinning/pending icon) so the raw files are backed up even if the git history isn't.
-      Everything genuinely new in there (the meeting-pipeline scripts) has already been copied
-      into `pmo-tracker-standalone` and pushed, so this is a secondary safety net, not the
-      only copy.
+      access to it. From a terminal where you know that push *does* work (or after fixing
+      access), run `git add -A && git commit && git push` in that folder, or at minimum confirm
+      OneDrive has fully synced it too. Everything genuinely new in there (the meeting-pipeline
+      scripts) has already been copied into `pmo-tracker-standalone` and pushed, so this is a
+      secondary safety net, not the only copy.
 - [ ] **Security**: `sales_ai_copilot/.env.example` has real-looking committed secrets
       (an Anthropic API key, a `MINDCASE_API_KEY`) — this is a template file that's supposed
       to hold blanks, not live values. Rotate both keys and consider scrubbing them from git
       history. Not touched or carried forward by anything in this guide.
-- [ ] Export/copy this repo's `.env` file somewhere you'll have on the Mac (a password
-      manager entry, not another git repo) — see the exact variable list below.
-- [ ] Note down whether `C:\dev\pmo-tracker-standalone\tasks.db` exists and has anything in
+- [ ] Note down whether a stray `tasks.db` exists anywhere in this repo and has anything in
       it. It shouldn't matter (Turso is authoritative whenever `TURSO_DATABASE_URL` is set),
-      but check `TURSO_DATABASE_URL` is actually set in your `.env` right now, not just
-      assumed — if it were unset, the app would silently be running off that local file
-      instead, and *that* would need to actually transfer.
+      but check `TURSO_DATABASE_URL` is actually set in `.env` right now, not just assumed —
+      if it were unset, the app would silently be running off that local file instead, and
+      *that* would need to actually transfer.
 
 ## The .env secrets checklist
 
-None of these are in git. Copy the values (not this file) somewhere durable before wiping
-Windows — a password manager is the right place, not a text file synced to the same
-OneDrive/iCloud that could vanish along with everything else.
+Only needed if `.env` *didn't* make it over via OneDrive intact (check first — see
+`0_START_HERE_NEW_MAC.md` step 7). If you do need to recreate it: copy the values into a
+password manager first, not just straight into a fresh `.env` — a password manager survives
+independently of any one machine or sync folder.
 
 | Variable | Where to find/regenerate it |
 |---|---|
@@ -76,18 +78,32 @@ apply fresh there.
 
 ## Setting up the Mac
 
+Full walkthrough (Homebrew, Xcode CLT, VS Code, Claude Code) is in
+`0_START_HERE_NEW_MAC.md`, one level up in `Claude environment/`. This section covers just
+this repo's own setup once those prerequisites are in place.
+
 1. **Install prerequisites**
    ```bash
    xcode-select --install        # git, plus build tools some packages need
    brew install python@3.12
    ```
-2. **Clone the repo**
+2. **Get to this repo and verify what OneDrive actually brought over**
    ```bash
-   git clone https://github.com/lockheedhillbilly/pmo_tracker.git ~/dev/pmo-tracker-standalone
-   cd ~/dev/pmo-tracker-standalone
+   cd "$HOME/OneDrive - The Boston Consulting Group, Inc/Claude environment/tools/pmo-tracker-standalone"
+   git status                     # should be clean
+   git fetch origin master && git log --oneline -1 HEAD origin/master   # hashes should match
+   ls .env                        # should exist
    ```
-3. **Recreate `.env`** — copy `.env.example` to `.env` and fill in the values from your
-   password manager (the checklist above).
+   If any of those look wrong, don't patch the synced copy — clone fresh instead:
+   ```bash
+   git clone https://github.com/lockheedhillbilly/pmo_tracker.git ~/pmo-tracker-standalone-fresh
+   cd ~/pmo-tracker-standalone-fresh
+   ```
+   and recreate `.env` from the checklist above (GitHub always has the code; only `.env`
+   itself needs manual re-entry in this fallback path).
+3. **`.env`** — should already be present per step 2. Only touch this if it's missing: copy
+   `.env.example` to `.env` and fill in the values from your password manager (the checklist
+   above).
 4. **Install Python dependencies**
    ```bash
    python3 -m venv .venv
