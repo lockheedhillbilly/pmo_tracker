@@ -30,3 +30,31 @@ truststore>=0.9; sys_platform == "win32"
 
 # Tests (test_db.py)
 pytest>=7.4
+
+# --- Local meeting-watcher pipeline (meeting_watcher.py and friends) — these run as a
+# standalone local process, not part of the hosted dashboard, so only needed on whatever
+# machine is actually recording/transcribing meetings. ---
+
+# Outlook COM automation (calendar_watch.py, meeting_watcher.py) — Windows-only; there is no
+# macOS/Linux equivalent for this, calendar polling needs a different approach there
+# (e.g. Microsoft Graph API) before this pipeline can run on a non-Windows machine.
+pywin32>=310; sys_platform == "win32"
+
+# WASAPI loopback + mic capture (audio_capture.py) — also Windows-only (WASAPI is a Windows
+# audio API); needs a different capture backend on macOS (no drop-in replacement here yet).
+PyAudioWPatch>=0.2.12.7; sys_platform == "win32"
+
+# Resampling loopback/mic audio to a common rate before mixing (audio_capture.py) — portable.
+scipy>=1.11
+
+# Local transcription via faster-whisper/CTranslate2 (transcribe.py) — portable, including
+# macOS (Apple Silicon and Intel).
+faster-whisper>=1.0
+
+# Zoom cloud recording/transcript fallback (zoom_cloud.py) — portable, plain REST calls.
+requests>=2.32
+
+# Google Drive upload of meeting summaries (drive_upload.py) — portable.
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.140
