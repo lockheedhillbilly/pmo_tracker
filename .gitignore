@@ -1,5 +1,7 @@
 # Secrets — never commit
 .env
+.gdrive_client_secret.json
+.gdrive_token.json
 
 # Local database (personal data, not code)
 *.db
